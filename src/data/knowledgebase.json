@@ -1,0 +1,15 @@
+{
+    "ciorba": {
+      "label": "Ciorba",
+      "description": "Reteta de ciorba radauteana de la JAMILA",
+      "keywords": ["ciorba", "reteta", "gatit", "mancare", "supa", "ingrediente", "bucatarie", "radauteana"],
+      "content_type": "recipe",
+      "files": [
+        {
+          "description": "reteta de ciorba",
+          "path": "reteta_ciorba.txt"
+        }
+      ]
+    }
+  }
+  
