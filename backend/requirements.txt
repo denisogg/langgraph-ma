@@ -1,0 +1,16 @@
+# Existing dependencies
+fastapi
+uvicorn
+python-multipart
+python-dotenv
+openai
+tavily-python
+langgraph
+langchain-openai
+
+# New dependencies for hybrid NLP approach
+spacy>=3.7.0
+openai>=1.0.0
+
+# Optional: for better language support
+# spacy[transformers]  # Uncomment for transformer-based models 

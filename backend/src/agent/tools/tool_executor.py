@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-from src.agent.state import State
-from src.agent.tools.tool_config import (
+from ..state import State
+from .tool_config import (
     ToolConfig, 
     get_available_tools_info, 
     should_use_tool, 
@@ -17,12 +17,43 @@ from src.agent.tools.tool_config import (
     get_tool_description,
     generate_dynamic_tools_context
 )
-from src.agent.tools.usage_tracker import get_usage_tracker
+from .usage_tracker import get_usage_tracker
 
 # Load knowledgebase from disk
 KNOWLEDGEBASE_PATH = Path(__file__).parent.parent.parent / "data" / "knowledgebase.json"
-with open(KNOWLEDGEBASE_PATH, "r", encoding="utf-8") as f:
-    KNOWLEDGEBASE = json.load(f)
+try:
+    with open(KNOWLEDGEBASE_PATH, "r", encoding="utf-8") as f:
+        KNOWLEDGEBASE = json.load(f)
+    print(f"✓ Loaded knowledgebase from: {KNOWLEDGEBASE_PATH}")
+except FileNotFoundError:
+    print(f"⚠️  Knowledgebase file not found at: {KNOWLEDGEBASE_PATH}")
+    print("Creating empty knowledgebase...")
+    KNOWLEDGEBASE = {
+        "recipes": {
+            "files": {
+                "ciorba_recipe": {
+                    "description": "Traditional Romanian soup recipe",
+                    "content": "Traditional Romanian ciorba de burtă recipe..."
+                }
+            }
+        },
+        "general": {
+            "files": {
+                "default": {
+                    "description": "General knowledge",
+                    "content": "General information..."
+                }
+            }
+        }
+    }
+    # Create the data directory and file if they don't exist
+    KNOWLEDGEBASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(KNOWLEDGEBASE_PATH, "w", encoding="utf-8") as f:
+        json.dump(KNOWLEDGEBASE, f, indent=2, ensure_ascii=False)
+    print(f"✓ Created knowledgebase at: {KNOWLEDGEBASE_PATH}")
+except Exception as e:
+    print(f"❌ Error loading knowledgebase: {e}")
+    KNOWLEDGEBASE = {}
 
 # Initialize Tavily client
 try:

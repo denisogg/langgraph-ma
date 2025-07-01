@@ -3,9 +3,9 @@ from langchain_openai import ChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage
 from dotenv import load_dotenv
 from typing import Generator, List
-from src.agent.state import State
-from src.agent.tools.tool_config import ToolConfig
-from src.agent.tools.tool_executor import get_agent_tools_context, execute_intelligent_tools
+from ..state import State
+from ..tools.tool_config import ToolConfig
+from ..tools.tool_executor import get_agent_tools_context, execute_intelligent_tools
 
 load_dotenv()
 llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.9, streaming=True)

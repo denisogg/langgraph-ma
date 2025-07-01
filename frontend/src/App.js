@@ -67,6 +67,9 @@ export default function App() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [knowledgebaseOptions, setKnowledgebaseOptions] = useState({});
+  const [supervisorMode, setSupervisorMode] = useState(false);
+  const [supervisorType, setSupervisorType] = useState("basic");
+  const [supervisorAvailable, setSupervisorAvailable] = useState(false);
 
   const dragItem = useRef();
   const dragType = useRef();
@@ -102,6 +105,17 @@ export default function App() {
     setCurrent(chatId);
     setFlow(res.data.agent_sequence);
     setHistory(res.data.history);
+    setSupervisorMode(res.data.supervisor_mode || false);
+    setSupervisorType(res.data.supervisor_type || "basic");
+    
+    // Check supervisor availability for this chat
+    try {
+      const supervisorRes = await axios.get(`http://localhost:8000/chats/${chatId}/supervisor`);
+      setSupervisorAvailable(supervisorRes.data.supervisor_available);
+    } catch (err) {
+      console.warn("Could not check supervisor availability:", err);
+      setSupervisorAvailable(false);
+    }
   };
 
   const newChat = async () => {
@@ -110,7 +124,7 @@ export default function App() {
     loadChat(res.data.id);
   };
 
-  const saveSettings = async (newFlow) => {
+  const saveSettings = async (newFlow, newSupervisorMode = supervisorMode, newSupervisorType = supervisorType) => {
     if (!current) {
       console.warn("No active chat. Cannot save settings.");
       return;
@@ -118,10 +132,25 @@ export default function App() {
     try {
       await axios.post(`http://localhost:8000/chats/${current}/settings`, {
         agent_sequence: newFlow,
+        supervisor_mode: newSupervisorMode,
+        supervisor_type: newSupervisorType,
       });
       setFlow(newFlow);
+      setSupervisorMode(newSupervisorMode);
+      setSupervisorType(newSupervisorType);
     } catch (err) {
       console.error("Failed to save settings:", err);
+    }
+  };
+
+  const toggleSupervisorMode = async (enabled, type = supervisorType) => {
+    if (!current) return;
+    try {
+      await axios.post(`http://localhost:8000/chats/${current}/supervisor?enabled=${enabled}&supervisor_type=${type}`);
+      setSupervisorMode(enabled);
+      setSupervisorType(type);
+    } catch (err) {
+      console.error("Failed to toggle supervisor mode:", err);
     }
   };
 
@@ -171,7 +200,32 @@ export default function App() {
                 sender: "tool",
                 text: data.text,
                 tool_id: data.tool_id,
-                for_agent: data.for_agent
+                for_agent: data.for_agent,
+                via_supervisor: data.via_supervisor || false
+              }]);
+            } else if (data.sender === "supervisor") {
+              // Handle supervisor routing decisions
+              setHistory((h) => [...h, {
+                sender: "supervisor",
+                text: data.text,
+                routing_decision: data.routing_decision,
+                chosen_agent: data.chosen_agent,
+                supervisor_type: data.supervisor_type
+              }]);
+            } else if (data.via_supervisor) {
+              // Handle agent responses via supervisor
+              setHistory((h) => [...h, {
+                sender: data.sender,
+                text: data.text,
+                via_supervisor: true,
+                supervisor_type: data.supervisor_type
+              }]);
+            } else if (data.sender === "system" && data.error) {
+              // Handle system error messages
+              setHistory((h) => [...h, {
+                sender: "system",
+                text: data.text,
+                error: true
               }]);
             } else if (data.stream_start) {
               // Start of agent streaming
@@ -220,30 +274,82 @@ export default function App() {
 
         const newMessages = [];
         
-        // Process tool outputs correctly
-        if (res.data.tool_outputs) {
-          for (const [toolName, toolResult] of Object.entries(res.data.tool_outputs)) {
-            // Extract text from result (could be string or dict)
-            let text_result;
-            if (typeof toolResult === 'object' && toolResult.result) {
-              text_result = toolResult.result;
-            } else {
-              text_result = toolResult;
+                          // Handle system errors from supervisor mode
+        if (res.data.error && res.data.system_error) {
+          newMessages.push({
+            sender: "system",
+            text: res.data.system_error,
+            error: true
+          });
+        } else if (res.data.supervisor_routing) {
+            // Add supervisor decision if available
+            if (res.data.supervisor_decision) {
+              newMessages.push({
+                sender: "supervisor",
+                text: res.data.supervisor_decision,
+                routing_decision: true,
+                chosen_agent: res.data.chosen_agent,
+                supervisor_type: res.data.supervisor_type
+              });
             }
             
-            newMessages.push({ 
-              sender: "tool", 
-              text: text_result,
-              tool_id: toolName,
-              for_agent: toolResult.agent || "unknown"
-            });
+            // Add tool outputs from supervisor if available
+            if (res.data.tool_outputs) {
+              for (const [toolName, toolResult] of Object.entries(res.data.tool_outputs)) {
+                let text_result;
+                if (typeof toolResult === 'object' && toolResult.result) {
+                  text_result = toolResult.result;
+                } else {
+                  text_result = toolResult;
+                }
+                
+                newMessages.push({ 
+                  sender: "tool", 
+                  text: text_result,
+                  tool_id: toolName,
+                  for_agent: res.data.chosen_agent,
+                  via_supervisor: true
+                });
+              }
+            }
+            
+            // Add agent response via supervisor
+            if (res.data.agent_response) {
+              newMessages.push({
+                sender: res.data.chosen_agent,
+                text: res.data.agent_response,
+                via_supervisor: true,
+                supervisor_type: res.data.supervisor_type
+              });
+            }
+          } else {
+          // Handle regular sequential mode responses
+          
+          // Process tool outputs correctly
+          if (res.data.tool_outputs) {
+            for (const [toolName, toolResult] of Object.entries(res.data.tool_outputs)) {
+              // Extract text from result (could be string or dict)
+              let text_result;
+              if (typeof toolResult === 'object' && toolResult.result) {
+                text_result = toolResult.result;
+              } else {
+                text_result = toolResult;
+              }
+              
+              newMessages.push({ 
+                sender: "tool", 
+                text: text_result,
+                tool_id: toolName,
+                for_agent: toolResult.agent || "unknown"
+              });
+            }
           }
+          
+          // Process agent outputs
+          if (res.data.granny_output) newMessages.push({ sender: "granny", text: res.data.granny_output });
+          if (res.data.story_output) newMessages.push({ sender: "story_creator", text: res.data.story_output });
+          if (res.data.parody_output) newMessages.push({ sender: "parody_creator", text: res.data.parody_output });
         }
-        
-        // Process agent outputs
-        if (res.data.granny_output) newMessages.push({ sender: "granny", text: res.data.granny_output });
-        if (res.data.story_output) newMessages.push({ sender: "story_creator", text: res.data.story_output });
-        if (res.data.parody_output) newMessages.push({ sender: "parody_creator", text: res.data.parody_output });
 
         setHistory((h) => [...h, ...newMessages]);
       } catch (fallbackErr) {
@@ -521,6 +627,10 @@ export default function App() {
                   ? "#1e40af" :
                   m.sender === "tool" 
                   ? "#fef3c7" : // Light cream for tools
+                  m.sender === "supervisor"
+                  ? "#f3e8ff" : // Light purple for supervisor
+                  m.sender === "system" && m.error
+                  ? "#fee2e2" : // Light red for system errors
                   m.sender === "granny" 
                   ? "#dbeafe" :
                   m.sender === "story_creator" 
@@ -529,9 +639,15 @@ export default function App() {
                   ? "#fce7f3" :
                   "#ffffff",
                 color: m.sender === "user" ? "#fff" : 
-                       m.sender === "tool" ? "#92400e" : "#374151", // Professional brown for tool text
+                       m.sender === "tool" ? "#92400e" : 
+                       m.sender === "supervisor" ? "#7c3aed" : 
+                       m.sender === "system" && m.error ? "#dc2626" : "#374151",
                 border: m.sender === "tool" 
                   ? "1px solid #f59e0b" 
+                  : m.sender === "supervisor"
+                  ? "1px solid #8b5cf6"
+                  : m.sender === "system" && m.error
+                  ? "1px solid #ef4444"
                   : m.sender === "user" 
                   ? "none" 
                   : "1px solid #e5e7eb",
@@ -566,6 +682,19 @@ export default function App() {
                         </svg>
                       </div>
                       <span style={{ color: "#92400e" }}>Tool: {m.tool_id}</span>
+                      {m.via_supervisor && (
+                        <span style={{ 
+                          marginLeft: "8px", 
+                          fontSize: "10px",
+                          color: "#ffffff",
+                          background: "#8b5cf6",
+                          padding: "2px 6px",
+                          borderRadius: "3px",
+                          fontWeight: "500"
+                        }}>
+                          VIA SUPERVISOR
+                        </span>
+                      )}
                       {m.for_agent && (
                         <span style={{ 
                           marginLeft: "auto", 
@@ -589,7 +718,116 @@ export default function App() {
                       {m.text}
                     </div>
                   </div>
-                ) : (
+                ) : m.sender === "supervisor" ? (
+                  // Special design for supervisor routing messages
+                  <div>
+                    <div style={{ 
+                      display: "flex", 
+                      alignItems: "center", 
+                      marginBottom: "12px",
+                      padding: "8px 12px",
+                      background: "#8b5cf6",
+                      borderRadius: "6px",
+                      fontSize: "14px",
+                      fontWeight: "600"
+                    }}>
+                      <div style={{
+                        width: "20px",
+                        height: "20px",
+                        background: "#7c3aed",
+                        borderRadius: "4px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        marginRight: "8px",
+                        color: "#ffffff"
+                      }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                        </svg>
+                      </div>
+                      <span style={{ color: "#ffffff" }}>🤖 Supervisor Routing</span>
+                      {m.chosen_agent && (
+                        <span style={{ 
+                          marginLeft: "auto", 
+                          fontSize: "12px",
+                          color: "#7c3aed",
+                          background: "#ffffff",
+                          padding: "4px 8px",
+                          borderRadius: "4px",
+                          fontWeight: "500"
+                        }}>
+                          → {m.chosen_agent}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ 
+                      whiteSpace: "pre-wrap", 
+                      fontSize: "14px",
+                      lineHeight: "1.6",
+                      color: "#7c3aed"
+                    }}>
+                      {m.text}
+                    </div>
+                    {m.chosen_agent && (
+                      <div style={{
+                        marginTop: "8px",
+                        padding: "6px 10px",
+                        background: "#ffffff",
+                        borderRadius: "4px",
+                        fontSize: "12px",
+                        color: "#6b7280",
+                        border: "1px solid #d1d5db"
+                      }}>
+                        🎯 Delegated to <strong>{
+                          m.chosen_agent === "granny" ? "Granny" :
+                          m.chosen_agent === "story_creator" ? "Story Creator" :
+                          m.chosen_agent === "parody_creator" ? "Parody Creator" :
+                          m.chosen_agent
+                        }</strong> ({m.supervisor_type} routing)
+                      </div>
+                                         )}
+                   </div>
+                 ) : m.sender === "system" && m.error ? (
+                   // Special design for system error messages
+                   <div>
+                     <div style={{ 
+                       display: "flex", 
+                       alignItems: "center", 
+                       marginBottom: "12px",
+                       padding: "8px 12px",
+                       background: "#ef4444",
+                       borderRadius: "6px",
+                       fontSize: "14px",
+                       fontWeight: "600"
+                     }}>
+                       <div style={{
+                         width: "20px",
+                         height: "20px",
+                         background: "#dc2626",
+                         borderRadius: "4px",
+                         display: "flex",
+                         alignItems: "center",
+                         justifyContent: "center",
+                         marginRight: "8px",
+                         color: "#ffffff"
+                       }}>
+                         <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                           <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                         </svg>
+                       </div>
+                       <span style={{ color: "#ffffff" }}>⚠️ System Error</span>
+                     </div>
+                     <div style={{ 
+                       whiteSpace: "pre-wrap", 
+                       fontSize: "14px",
+                       lineHeight: "1.6",
+                       color: "#dc2626"
+                     }}>
+                       {m.text}
+                     </div>
+                   </div>
+                 ) : (
                   // Modern design for agent messages
                   <div>
                     <div style={{
@@ -625,6 +863,19 @@ export default function App() {
                        m.sender === "parody_creator" ? "Parody Creator" :
                        m.sender === "user" ? "You" :
                        m.sender}
+                      {m.via_supervisor && (
+                        <span style={{
+                          marginLeft: "8px",
+                          fontSize: "10px",
+                          background: "#8b5cf6",
+                          color: "#ffffff",
+                          padding: "2px 6px",
+                          borderRadius: "3px",
+                          fontWeight: "500"
+                        }}>
+                          VIA SUPERVISOR
+                        </span>
+                      )}
                     </div>
                     <div style={{ 
                       whiteSpace: "pre-wrap", 
@@ -763,11 +1014,15 @@ export default function App() {
           </h3>
         </div>
 
-        <div style={{ marginBottom: "20px" }}>
+        <div style={{ 
+          marginBottom: "20px",
+          opacity: supervisorMode ? 0.5 : 1,
+          pointerEvents: supervisorMode ? "none" : "auto"
+        }}>
           <h4 style={{ 
             fontSize: "14px", 
             fontWeight: "600", 
-            color: "#374151", 
+            color: supervisorMode ? "#9ca3af" : "#374151", 
             marginBottom: "12px",
             display: "flex",
             alignItems: "center"
@@ -775,7 +1030,7 @@ export default function App() {
             <div style={{
               width: "16px",
               height: "16px",
-              background: "#3b82f6",
+              background: supervisorMode ? "#9ca3af" : "#3b82f6",
               borderRadius: "3px",
               display: "flex",
               alignItems: "center",
@@ -787,33 +1042,52 @@ export default function App() {
               A
             </div>
             Available Agents
+            {supervisorMode && (
+              <span style={{
+                fontSize: "10px",
+                background: "#f3f4f6",
+                color: "#6b7280",
+                padding: "2px 6px",
+                borderRadius: "3px",
+                marginLeft: "8px",
+                fontWeight: "500"
+              }}>
+                AUTO-MANAGED
+              </span>
+            )}
           </h4>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
             {ALL_AGENTS.map((agent) => (
               <div
                 key={agent}
-                draggable
+                draggable={!supervisorMode}
                 onDragStart={() => {
-                  dragItem.current = agent;
-                  dragType.current = "agent";
+                  if (!supervisorMode) {
+                    dragItem.current = agent;
+                    dragType.current = "agent";
+                  }
                 }}
                 style={{
                   padding: "8px 12px",
-                  background: "#dbeafe",
-                  border: "1px solid #3b82f6",
+                  background: supervisorMode ? "#f3f4f6" : "#dbeafe",
+                  border: `1px solid ${supervisorMode ? "#d1d5db" : "#3b82f6"}`,
                   borderRadius: "6px",
-                  cursor: "grab",
+                  cursor: supervisorMode ? "not-allowed" : "grab",
                   fontSize: "12px",
                   fontWeight: "500",
-                  color: "#1e40af",
+                  color: supervisorMode ? "#6b7280" : "#1e40af",
                   transition: "all 0.2s ease",
                   userSelect: "none"
                 }}
                 onMouseEnter={(e) => {
-                  e.target.style.background = "#bfdbfe";
+                  if (!supervisorMode) {
+                    e.target.style.background = "#bfdbfe";
+                  }
                 }}
                 onMouseLeave={(e) => {
-                  e.target.style.background = "#dbeafe";
+                  if (!supervisorMode) {
+                    e.target.style.background = "#dbeafe";
+                  }
                 }}
               >
                 {agent === "granny" ? "Granny" :
@@ -825,6 +1099,91 @@ export default function App() {
           </div>
         </div>
 
+        <div style={{ 
+          marginBottom: "20px",
+          opacity: supervisorMode ? 0.5 : 1,
+          pointerEvents: supervisorMode ? "none" : "auto"
+        }}>
+          <h4 style={{ 
+            fontSize: "14px", 
+            fontWeight: "600", 
+            color: supervisorMode ? "#9ca3af" : "#374151", 
+            marginBottom: "12px",
+            display: "flex",
+            alignItems: "center"
+          }}>
+            <div style={{
+              width: "16px",
+              height: "16px",
+              background: supervisorMode ? "#9ca3af" : "#f59e0b",
+              borderRadius: "3px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              marginRight: "8px",
+              color: "#ffffff",
+              fontSize: "10px"
+            }}>
+              T
+            </div>
+            Available Tools
+            {supervisorMode && (
+              <span style={{
+                fontSize: "10px",
+                background: "#f3f4f6",
+                color: "#6b7280",
+                padding: "2px 6px",
+                borderRadius: "3px",
+                marginLeft: "8px",
+                fontWeight: "500"
+              }}>
+                AUTO-MANAGED
+              </span>
+            )}
+          </h4>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+            {ALL_TOOLS.map((tool) => (
+              <div
+                key={tool}
+                draggable={!supervisorMode}
+                onDragStart={() => {
+                  if (!supervisorMode) {
+                    dragItem.current = tool;
+                    dragType.current = "tool";
+                  }
+                }}
+                style={{
+                  padding: "8px 12px",
+                  background: supervisorMode ? "#f3f4f6" : "#fef3c7",
+                  border: `1px solid ${supervisorMode ? "#d1d5db" : "#f59e0b"}`,
+                  borderRadius: "6px",
+                  cursor: supervisorMode ? "not-allowed" : "grab",
+                  fontSize: "12px",
+                  fontWeight: "500",
+                  color: supervisorMode ? "#6b7280" : "#92400e",
+                  transition: "all 0.2s ease",
+                  userSelect: "none"
+                }}
+                onMouseEnter={(e) => {
+                  if (!supervisorMode) {
+                    e.target.style.background = "#fde68a";
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!supervisorMode) {
+                    e.target.style.background = "#fef3c7";
+                  }
+                }}
+              >
+                {tool === "web_search" ? "Web Search" :
+                 tool === "knowledgebase" ? "Knowledge Base" :
+                 tool}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Supervisor Mode Controls */}
         <div style={{ marginBottom: "20px" }}>
           <h4 style={{ 
             fontSize: "14px", 
@@ -837,7 +1196,7 @@ export default function App() {
             <div style={{
               width: "16px",
               height: "16px",
-              background: "#f59e0b",
+              background: "#8b5cf6",
               borderRadius: "3px",
               display: "flex",
               alignItems: "center",
@@ -846,43 +1205,104 @@ export default function App() {
               color: "#ffffff",
               fontSize: "10px"
             }}>
-              T
+              S
             </div>
-            Available Tools
+            Supervisor Mode
+            {!supervisorAvailable && (
+              <span style={{
+                fontSize: "10px",
+                background: "#fef3c7",
+                color: "#92400e",
+                padding: "2px 6px",
+                borderRadius: "3px",
+                marginLeft: "8px",
+                fontWeight: "500"
+              }}>
+                UNAVAILABLE
+              </span>
+            )}
           </h4>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-            {ALL_TOOLS.map((tool) => (
-              <div
-                key={tool}
-                draggable
-                onDragStart={() => {
-                  dragItem.current = tool;
-                  dragType.current = "tool";
-                }}
-                style={{
-                  padding: "8px 12px",
-                  background: "#fef3c7",
-                  border: "1px solid #f59e0b",
-                  borderRadius: "6px",
-                  cursor: "grab",
-                  fontSize: "12px",
-                  fontWeight: "500",
-                  color: "#92400e",
-                  transition: "all 0.2s ease",
-                  userSelect: "none"
-                }}
-                onMouseEnter={(e) => {
-                  e.target.style.background = "#fde68a";
-                }}
-                onMouseLeave={(e) => {
-                  e.target.style.background = "#fef3c7";
-                }}
-              >
-                {tool === "web_search" ? "Web Search" :
-                 tool === "knowledgebase" ? "Knowledge Base" :
-                 tool}
+          
+          <div style={{ 
+            background: supervisorMode ? "#f0f9ff" : "#f8fafc", 
+            border: `1px solid ${supervisorMode ? "#0ea5e9" : "#e2e8f0"}`,
+            borderRadius: "8px", 
+            padding: "12px" 
+          }}>
+            <div style={{ marginBottom: "12px" }}>
+              <label style={{ 
+                display: "flex", 
+                alignItems: "center", 
+                fontSize: "13px", 
+                fontWeight: "500",
+                color: "#374151",
+                cursor: supervisorAvailable ? "pointer" : "not-allowed"
+              }}>
+                <input
+                  type="checkbox"
+                  checked={supervisorMode}
+                  disabled={!supervisorAvailable}
+                  onChange={(e) => toggleSupervisorMode(e.target.checked)}
+                  style={{
+                    marginRight: "8px",
+                    transform: "scale(1.1)",
+                    cursor: supervisorAvailable ? "pointer" : "not-allowed"
+                  }}
+                />
+                Enable Intelligent Agent Routing
+              </label>
+            </div>
+            
+            {supervisorMode && (
+              <div>
+                <label style={{ 
+                  fontSize: "12px", 
+                  color: "#6b7280", 
+                  display: "block", 
+                  marginBottom: "6px",
+                  fontWeight: "500"
+                }}>
+                  Supervisor Type:
+                </label>
+                <select
+                  value={supervisorType}
+                  onChange={(e) => toggleSupervisorMode(true, e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "6px 10px",
+                    borderRadius: "6px",
+                    border: "1px solid #d1d5db",
+                    background: "#ffffff",
+                    fontSize: "12px",
+                    fontWeight: "500",
+                    color: "#374151",
+                    cursor: "pointer",
+                    outline: "none"
+                  }}
+                >
+                  <option value="basic">Basic Routing</option>
+                  <option value="advanced">Advanced Routing</option>
+                  <option value="enhanced">🧠 Enhanced Intelligence</option>
+                </select>
               </div>
-            ))}
+            )}
+            
+            <div style={{ 
+              fontSize: "11px", 
+              color: "#6b7280", 
+              marginTop: "8px",
+              lineHeight: "1.4"
+            }}>
+              {supervisorMode ? (
+                supervisorType === "enhanced" ? (
+                  <>🧠 AI will intelligently decompose complex queries and orchestrate multiple resources</>
+                ) : (
+                  <>🤖 AI will automatically choose the best agent for each request</>
+                )
+              ) : (
+                <>⚙️ Use manual agent flow configuration below</>
+              )}
+            </div>
           </div>
         </div>
 
@@ -890,15 +1310,16 @@ export default function App() {
           <h4 style={{ 
             fontSize: "14px", 
             fontWeight: "600", 
-            color: "#374151", 
+            color: supervisorMode ? "#9ca3af" : "#374151", 
             marginBottom: "16px",
             display: "flex",
-            alignItems: "center"
+            alignItems: "center",
+            opacity: supervisorMode ? 0.6 : 1
           }}>
             <div style={{
               width: "16px",
               height: "16px",
-              background: "#10b981",
+              background: supervisorMode ? "#9ca3af" : "#10b981",
               borderRadius: "3px",
               display: "flex",
               alignItems: "center",
@@ -909,14 +1330,29 @@ export default function App() {
             }}>
               F
             </div>
-            Chat Agent Flow
+            Manual Agent Flow
+            {supervisorMode && (
+              <span style={{
+                fontSize: "10px",
+                background: "#f3f4f6",
+                color: "#6b7280",
+                padding: "2px 6px",
+                borderRadius: "3px",
+                marginLeft: "8px",
+                fontWeight: "500"
+              }}>
+                DISABLED
+              </span>
+            )}
           </h4>
           
                      <div style={{ 
              flex: 1,
              overflowY: "auto",
              paddingRight: "4px",
-             minHeight: 0
+             minHeight: 0,
+             opacity: supervisorMode ? 0.5 : 1,
+             pointerEvents: supervisorMode ? "none" : "auto"
            }}>
             {flow.map((agent, idx) => (
               <div

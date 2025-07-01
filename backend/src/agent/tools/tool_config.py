@@ -298,38 +298,275 @@ def generate_tool_query(user_input: str, tool_name: str, context: Optional[Dict[
         return user_input
 
 def _generate_web_search_query(user_input: str, context: Optional[Dict[str, Any]] = None) -> str:
-    """Generate focused web search query"""
+    """Generate focused web search query using hybrid NLP approach"""
+    
+    # Step 1: Extract entities using spaCy NER
+    entities = _extract_entities_with_spacy(user_input)
+    
+    # Step 2: Use LLM to intelligently compose query from entities and intent
+    return _hybrid_query_generation(user_input, entities, "web_search")
+
+def _extract_entities_with_spacy(text: str) -> Dict[str, List[str]]:
+    """Extract entities using spaCy Named Entity Recognition with improved classification"""
+    try:
+        import spacy
+        
+        # Try to load spaCy model
+        try:
+            nlp = spacy.load("en_core_web_sm")
+        except OSError:
+            print("spaCy model 'en_core_web_sm' not found. Install with: python -m spacy download en_core_web_sm")
+            return _fallback_entity_extraction(text)
+        
+        doc = nlp(text)
+        
+        entities = {
+            "locations": [],
+            "dates": [],
+            "people": [],
+            "organizations": [],
+            "money": [],
+            "products": [],
+            "events": [],
+            "key_concepts": []
+        }
+        
+        # Known location names that might be misclassified
+        known_locations = {
+            "halkidiki", "paris", "london", "berlin", "rome", "madrid", "athens", 
+            "bucharest", "romania", "greece", "france", "germany", "italy", "spain"
+        }
+        
+        # Extract named entities with improved classification
+        for ent in doc.ents:
+            entity_text = ent.text.strip()
+            entity_lower = entity_text.lower()
+            
+            # Force location classification for known places
+            if entity_lower in known_locations:
+                entities["locations"].append(entity_text)
+            elif ent.label_ in ["GPE", "LOC"]:  # Geopolitical entities, locations
+                entities["locations"].append(entity_text)
+            elif ent.label_ in ["DATE", "TIME"]:  # Dates and times
+                entities["dates"].append(entity_text)
+            elif ent.label_ == "PERSON":  # People
+                entities["people"].append(entity_text)
+            elif ent.label_ == "ORG":  # Organizations (but not if it's a known location)
+                if entity_lower not in known_locations:
+                    entities["organizations"].append(entity_text)
+                else:
+                    entities["locations"].append(entity_text)
+            elif ent.label_ == "MONEY":  # Money amounts
+                entities["money"].append(entity_text)
+            elif ent.label_ in ["PRODUCT", "WORK_OF_ART"]:  # Products, works of art
+                entities["products"].append(entity_text)
+            elif ent.label_ == "EVENT":  # Events
+                entities["events"].append(entity_text)
+        
+        # Extract additional context using dependency parsing
+        important_nouns = []
+        for token in doc:
+            # Get important nouns that aren't stop words
+            if (token.pos_ in ["NOUN", "PROPN"] and 
+                not token.is_stop and 
+                len(token.text) > 2 and
+                token.text.lower() not in [e.lower() for sublist in entities.values() for e in sublist]):
+                important_nouns.append(token.text)
+        
+        entities["key_concepts"] = important_nouns[:5]  # Limit to top 5
+        
+        # Remove duplicates while preserving order
+        for key in entities:
+            entities[key] = list(dict.fromkeys(entities[key]))
+        
+        return entities
+        
+    except ImportError:
+        print("spaCy not available. Install with: pip install spacy")
+        return _fallback_entity_extraction(text)
+    except Exception as e:
+        print(f"spaCy entity extraction failed: {e}")
+        return _fallback_entity_extraction(text)
+
+def _fallback_entity_extraction(text: str) -> Dict[str, List[str]]:
+    """Simple fallback entity extraction when spaCy is not available"""
+    words = text.split()
+    entities = {
+        "locations": [],
+        "dates": [],
+        "people": [],
+        "organizations": [],
+        "money": [],
+        "products": [],
+        "events": [],
+        "key_concepts": []
+    }
+    
+    # Basic pattern matching for common entities
+    location_indicators = ["in", "at", "from", "to", "near"]
+    date_patterns = ["today", "tomorrow", "yesterday", "monday", "tuesday", "wednesday", 
+                    "thursday", "friday", "saturday", "sunday"]
+    
+    for i, word in enumerate(words):
+        word_clean = word.strip(".,!?").lower()
+        
+        # Detect potential locations (capitalized words after location indicators)
+        if (i > 0 and words[i-1].lower() in location_indicators and 
+            word[0].isupper() and len(word) > 2):
+            entities["locations"].append(word_clean)
+        
+        # Detect dates
+        if word_clean in date_patterns:
+            entities["dates"].append(word_clean)
+        
+        # Detect key concepts (longer words that aren't common)
+        if (len(word_clean) > 3 and 
+            word_clean not in ["would", "like", "tell", "about", "what", "how", "where", "when"]):
+            entities["key_concepts"].append(word_clean)
+    
+    # Limit key concepts
+    entities["key_concepts"] = entities["key_concepts"][:5]
+    
+    return entities
+
+def _hybrid_query_generation(user_input: str, entities: Dict[str, List[str]], tool_type: str) -> str:
+    """Hybrid approach: Use LLM with extracted entities for intelligent query generation"""
+    import os
+    
+    # Try LLM-based generation with entity context
+    try:
+        from openai import OpenAI
+        from dotenv import load_dotenv
+        
+        # Load environment variables
+        load_dotenv()
+        
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return _compose_query_from_entities(user_input, entities)
+        
+        client = OpenAI(api_key=api_key)
+        
+        # Build entity context for the LLM
+        entity_context = ""
+        for entity_type, entity_list in entities.items():
+            if entity_list:
+                entity_context += f"- {entity_type}: {', '.join(entity_list)}\n"
+        
+        prompt = f"""You are an expert at creating focused search queries.
+
+User request: "{user_input}"
+
+Extracted entities:
+{entity_context if entity_context else "- No specific entities detected"}
+
+Create a concise search query (3-6 words) that captures:
+1. The core intent (what they want to know)
+2. Key entities (especially locations, dates, products)
+3. Search context (current events, pricing, information)
+
+Examples:
+- "weather in Halkidiki today" → "weather Halkidiki today"
+- "best restaurants in Tokyo" → "best restaurants Tokyo"
+- "iPhone price Germany" → "iPhone price Germany"
+- "AI technology developments" → "AI technology developments"
+
+Return ONLY the search query:"""
+
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=15,
+            temperature=0.1
+        )
+        
+        query = response.choices[0].message.content
+        if query:
+            query = query.strip()
+        
+        # Validate and return
+        if query and 2 <= len(query.split()) <= 8:
+            return query
+        else:
+            return _compose_query_from_entities(user_input, entities)
+            
+    except Exception as e:
+        print(f"LLM query generation failed: {e}")
+        return _compose_query_from_entities(user_input, entities)
+
+def _compose_query_from_entities(user_input: str, entities: Dict[str, List[str]]) -> str:
+    """Compose search query using extracted entities with better prioritization"""
+    query_parts = []
     user_lower = user_input.lower()
     
-    # Extract search-worthy information
-    if "weather" in user_lower or "vremea" in user_lower or "vreme" in user_lower:
-        if "today" in user_lower or "current" in user_lower or "azi" in user_lower or "acum" in user_lower:
-            return "current weather forecast today"
-        return "weather forecast"
+    # Detect intent keywords first (priority order matters)
+    intent_keywords = {
+        "weather": ["weather", "forecast", "temperature", "climate", "today"],
+        "news": ["news", "latest", "update", "happening", "current"],
+        "price": ["price", "cost", "buy", "purchase", "expensive", "cheap"],
+        "restaurant": ["restaurant", "food", "eat", "dining"],
+        "travel": ["travel", "visit", "trip", "vacation"],
+        "learn": ["learn", "how", "tutorial", "guide"]
+    }
     
-    if "news" in user_lower or "stiri" in user_lower or "noutati" in user_lower:
-        if "today" in user_lower or "azi" in user_lower:
-            return "today latest news"
-        return "recent news"
+    # Add the most specific intent first
+    primary_intent = None
+    for intent, keywords in intent_keywords.items():
+        if any(keyword in user_lower for keyword in keywords):
+            primary_intent = intent
+            query_parts.append(intent)
+            break
     
-    if "price" in user_lower or "cost" in user_lower or "pret" in user_lower or "preturi" in user_lower:
-        # Extract what they want the price of
-        words = user_input.split()
-        for i, word in enumerate(words):
-            if word.lower() in ["price", "cost", "pret", "preturi"]:
-                if i > 0:
-                    return f"{words[i-1]} price"
-        return "current prices"
+    # Add entities in logical priority order
+    # 1. Locations are often most important for search queries
+    if entities.get("locations"):
+        query_parts.extend(entities["locations"][:1])  # Take only the first/most important location
     
-    # Default: extract key nouns and current-time indicators
-    time_words = ["today", "current", "now", "latest", "recent", "azi", "acum", "curent", "ultima", "ultimele"]
-    important_words = []
+    # 2. Add temporal information (today, dates)
+    if entities.get("dates"):
+        # Prioritize "today" and current time references
+        dates = entities["dates"]
+        today_terms = [d for d in dates if "today" in d.lower()]
+        if today_terms:
+            query_parts.extend(today_terms[:1])
+        else:
+            query_parts.extend(dates[:1])
     
-    for word in user_input.split():
-        if word.lower() in time_words or len(word) > 3:
-            important_words.append(word)
+    # 3. Add products/things if relevant
+    if entities.get("products") and len(query_parts) < 4:
+        query_parts.extend(entities["products"][:1])
     
-    return " ".join(important_words[:4])  # Limit to 4 most important words
+    # 4. Add key concepts only if we need more specificity
+    if len(query_parts) < 3 and entities.get("key_concepts"):
+        # Filter out concepts that are too generic
+        useful_concepts = []
+        generic_terms = {"story", "tell", "about", "like", "would", "make", "create"}
+        
+        for concept in entities["key_concepts"][:3]:
+            if concept.lower() not in generic_terms:
+                useful_concepts.append(concept)
+        
+        query_parts.extend(useful_concepts[:2])
+    
+    # If still not enough, carefully extract important words
+    if len(query_parts) < 2:
+        important_words = []
+        stop_words = {"i", "would", "like", "to", "can", "you", "please", "tell", "me", "about", 
+                      "the", "a", "an", "and", "or", "but", "in", "on", "at", "of", "for", "with"}
+        
+        for word in user_input.split():
+            clean_word = word.strip(".,!?").lower()
+            if (len(clean_word) > 2 and 
+                clean_word not in stop_words and 
+                not clean_word.isdigit() and
+                clean_word not in [part.lower() for part in query_parts]):
+                important_words.append(clean_word)
+        
+        query_parts.extend(important_words[:4-len(query_parts)])
+    
+    # Clean up and return
+    final_query = " ".join(query_parts[:5])  # Limit to 5 words max for better search results
+    return final_query if final_query.strip() else " ".join(user_input.split()[:3])  # Fallback
 
 def _generate_knowledgebase_query(user_input: str, context: Optional[Dict[str, Any]] = None) -> str:
     """Generate focused knowledgebase query using NLP-based similarity"""
