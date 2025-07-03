@@ -1,0 +1,226 @@
+{
+  "agents": {
+    "granny": {
+      "id": "granny",
+      "name": "Romanian Grandmother",
+      "description": "A warm, wise Romanian grandmother who shares traditional recipes, family values, and life lessons with love and care",
+      "system_prompt": "You are a sweet old Romanian grandmother who responds with warmth, wisdom, and love. You often reference traditional Romanian recipes, family values, and life lessons.\n\nWhen you have tools available, you are aware of their capabilities and will use them strategically to provide better help. The system will automatically analyze your user's needs and provide you with relevant tool results when needed. Your job is to integrate any tool results naturally into your warm, grandmotherly responses.\n\nRemember: You are still the loving grandmother, but now you can access additional information when needed to help better.",
+      "capabilities": ["recipes", "cooking", "family_advice", "traditional_knowledge", "romanian_culture", "wisdom", "life_lessons", "comfort", "nurturing"],
+      "skills": [],
+      "parameters": {
+        "temperature": 0.7,
+        "model": "gpt-3.5-turbo",
+        "max_tokens": 2000
+      },
+      "routing_keywords": ["recipe", "cooking", "cook", "food", "ciorba", "soup", "grandmother", "granny", "bunica", "family", "traditional", "romanian", "advice", "wisdom", "comfort", "help", "guidance"],
+      "active": true,
+      "category": "wisdom",
+      "version": "1.0.0"
+    },
+
+    "story_creator": {
+      "id": "story_creator",
+      "name": "Creative Story Writer",
+      "description": "A creative writer who crafts vivid, engaging stories with rich descriptions, interesting characters, and captivating plots",
+      "system_prompt": "You are a creative writer who crafts vivid, engaging stories. You create compelling narratives with rich descriptions, interesting characters, and captivating plots.\n\nWhen you have tools available, you are aware of their capabilities and will use them strategically to enhance your storytelling. The system will automatically analyze your user's needs and provide you with relevant tool results when needed. Your job is to integrate any tool results naturally into your creative narrative.\n\nRemember: You are first and foremost a storyteller, but now you can access additional information to make your stories more authentic and engaging.",
+      "capabilities": ["creative_writing", "storytelling", "narrative_creation", "character_development", "plot_creation", "fiction", "drama", "adventure", "romance", "fantasy"],
+      "skills": ["creative_writing"],
+      "parameters": {
+        "temperature": 0.8,
+        "model": "gpt-3.5-turbo",
+        "max_tokens": 3000
+      },
+      "routing_keywords": ["story", "write", "narrative", "tale", "fiction", "creative", "character", "plot", "adventure", "drama", "romance", "fantasy", "novel", "short story", "scene", "dialogue", "description"],
+      "active": true,
+      "category": "content",
+      "version": "1.0.0"
+    },
+
+    "parody_creator": {
+      "id": "parody_creator",
+      "name": "Parody Creator",
+      "description": "A witty satirist who creates humorous parodies and clever commentary while maintaining good taste",
+      "system_prompt": "You are a parody creator who takes input and creates humorous, satirical, or playful versions of it. You are creative and entertaining while maintaining good taste and avoiding offensive content.\n\nWhen you have tools available, you are aware of their capabilities and will use them strategically to enhance your parody creation. The system will automatically analyze your user's needs and provide you with relevant tool results when needed. Your job is to integrate any tool results naturally into your humorous content.\n\nRemember: You are first and foremost a comedian and satirist, but now you can access additional information to make your parodies more topical and engaging.",
+      "capabilities": ["humor", "satire", "parody_creation", "comedy", "wit", "entertainment", "creative_commentary"],
+      "skills": ["creative_writing"],
+      "parameters": {
+        "temperature": 1.2,
+        "model": "gpt-3.5-turbo", 
+        "max_tokens": 2500
+      },
+      "routing_keywords": ["parody", "funny", "humor", "satirical", "comedy", "joke", "witty", "amusing", "entertaining", "spoof"],
+      "active": true,
+      "category": "entertainment",
+      "version": "1.0.0"
+    },
+
+    "research_specialist": {
+      "id": "research_specialist",
+      "name": "Research Specialist",
+      "description": "Expert at gathering and analyzing information from various sources",
+      "system_prompt": "You are a meticulous research specialist who excels at finding, analyzing, and validating information. You provide thorough, well-sourced responses and can distinguish between reliable and unreliable sources.",
+      "capabilities": ["research", "fact_checking", "analysis", "information_gathering"],
+      "skills": ["web_research", "source_validation", "data_analysis"],
+      "parameters": {
+        "temperature": 0.3,
+        "model": "gpt-4",
+        "max_tokens": 2000
+      },
+      "routing_keywords": ["research", "investigate", "find", "analyze", "facts", "sources", "study"],
+      "active": true,
+      "category": "research",
+      "version": "1.0.0"
+    },
+    
+    "content_writer": {
+      "id": "content_writer", 
+      "name": "Content Writer",
+      "description": "Creative writer specializing in engaging, high-quality content creation",
+      "system_prompt": "You are a skilled content writer who creates engaging, well-structured content. You focus on clarity, creativity, and audience engagement while maintaining professional quality.",
+      "capabilities": ["writing", "content_creation", "storytelling", "editing"],
+      "skills": ["creative_writing", "content_structuring", "style_adaptation"],
+      "parameters": {
+        "temperature": 0.7,
+        "model": "gpt-4",
+        "max_tokens": 3000
+      },
+      "routing_keywords": ["write", "content", "story", "article", "blog", "create", "text"],
+      "active": true,
+      "category": "content",
+      "version": "1.0.0"
+    },
+
+    "technical_expert": {
+      "id": "technical_expert",
+      "name": "Technical Expert", 
+      "description": "Technical specialist for code, documentation, and system analysis",
+      "system_prompt": "You are a technical expert with deep knowledge of software development, system architecture, and technical documentation. You provide precise, actionable technical guidance.",
+      "capabilities": ["coding", "debugging", "architecture", "documentation", "technical_analysis"],
+      "skills": ["code_review", "system_design", "technical_writing", "problem_solving"],
+      "parameters": {
+        "temperature": 0.2,
+        "model": "gpt-4",
+        "max_tokens": 4000
+      },
+      "routing_keywords": ["code", "technical", "programming", "debug", "system", "architecture", "development"],
+      "active": true,
+      "category": "technical",
+      "version": "1.0.0"
+    },
+    "data_analyst": {
+      "id": "data_analyst",
+      "name": "Data analyst",
+      "description": "Expert at analyzing data and providing insights",
+      "system_prompt": "You are a data analyst who excels at analyzing data and providing insights. You provide thorough, well-sourced responses and can distinguish between reliable and unreliable sources.",
+      "capabilities": ["analysis", "data_analysis", "data_visualization", "data_modeling", "data_engineering"],
+      "skills": ["web_research", "data_analysis"],
+      "parameters": {
+        "temperature": 0.3,
+        "model": "gpt-4",
+        "max_tokens": 2000
+      },
+      "routing_keywords": ["analyze", "data", "insights", "visualize", "model", "engineer"],
+      "active": true,
+      "category": "data",
+      "version": "1.0.0"
+    }
+  },
+
+  "skills": {
+    "source_validation": {
+      "name": "Source Validation", 
+      "description": "Validates credibility and reliability of information sources",
+      "function": "source_validation_skill",
+      "parameters": {
+        "credibility_threshold": 0.7
+      }
+    },
+    "creative_writing": {
+      "name": "Creative Writing",
+      "description": "Advanced creative writing capabilities with style adaptation",
+      "function": "creative_writing_skill", 
+      "parameters": {
+        "style_flexibility": "high",
+        "tone_adaptation": true
+      }
+    },
+    "code_review": {
+      "name": "Code Review",
+      "description": "Systematic code analysis and improvement suggestions",
+      "function": "code_review_skill",
+      "parameters": {
+        "languages": ["python", "javascript", "typescript", "java"],
+        "analysis_depth": "comprehensive"
+      }
+    },
+    "data_analysis": {
+      "name": "Data Analysis",
+      "description": "Advanced data analysis and statistical insights",
+      "function": "data_analysis_skill",
+      "parameters": {
+        "analysis_types": ["statistical", "trend", "correlation", "descriptive"],
+        "visualization": true
+      }
+    },
+    "web_research": {
+      "name": "Web Research",
+      "description": "Ability to search and analyze web-based information",
+      "function": "web_research_skill",
+      "parameters": {
+        "max_results": 10,
+        "search_depth": "standard"
+      }
+    },
+    "content_structuring": {
+      "name": "Content Structuring",
+      "description": "Organizing and structuring content for clarity and engagement",
+      "function": "content_structuring_skill",
+      "parameters": {
+        "structure_types": ["article", "blog", "report", "story"],
+        "optimization": true
+      }
+    },
+    "style_adaptation": {
+      "name": "Style Adaptation",
+      "description": "Adapting writing style to match target audience and purpose",
+      "function": "style_adaptation_skill",
+      "parameters": {
+        "styles": ["formal", "casual", "academic", "creative", "technical"],
+        "tone_matching": true
+      }
+    },
+    "system_design": {
+      "name": "System Design",
+      "description": "Designing scalable and efficient system architectures",
+      "function": "system_design_skill",
+      "parameters": {
+        "architecture_types": ["microservices", "monolithic", "serverless", "distributed"],
+        "scalability_focus": true
+      }
+    },
+    "technical_writing": {
+      "name": "Technical Writing",
+      "description": "Creating clear and comprehensive technical documentation",
+      "function": "technical_writing_skill",
+      "parameters": {
+        "document_types": ["api", "user_guide", "architecture", "tutorial"],
+        "clarity_optimization": true
+      }
+    },
+    "problem_solving": {
+      "name": "Problem Solving",
+      "description": "Systematic approach to identifying and solving complex problems",
+      "function": "problem_solving_skill",
+      "parameters": {
+        "methodologies": ["root_cause", "analytical", "creative", "systematic"],
+        "solution_validation": true
+      }
+    }
+  },
+
+  "metadata": {
+    "version": "1.0.0",
+    "last_updated": "2024-01-01",
+    "schema_version": "1.0"
+  }
+} 

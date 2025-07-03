@@ -9,9 +9,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path
 
-from .story_creator.agent import create_story, create_story_response_stream
-from .parody_creator.agent import create_parody, create_parody_response_stream
-from .granny.agent import create_granny_response, create_granny_response_stream
+# Legacy imports removed - now using enhanced_agent_registry
+# from .story_creator.agent import create_story, create_story_response_stream
+# from .parody_creator.agent import create_parody, create_parody_response_stream  
+# from .granny.agent import create_granny_response, create_granny_response_stream
 from .state import ChatMessage, State
 from .tools.tool_executor import execute_tool
 from .tools.tool_config import ToolConfig
@@ -21,7 +22,10 @@ from langgraph.types import Command
 from langchain_core.messages import HumanMessage, AIMessage
 import threading
 
-# Import supervisor functionality
+# Import enhanced agent registry and supervisor functionality
+from .enhanced_registry import enhanced_agent_registry
+from .supervisor.enhanced_supervisor import create_enhanced_supervisor
+
 try:
     from .supervisor.supervisor_agent import create_supervisor_agent, create_advanced_supervisor_agent
     SUPERVISOR_AVAILABLE = True
@@ -69,11 +73,32 @@ def save_chats():
 def sanitize_node_id(text: str) -> str:
     return re.sub(r'[^a-zA-Z0-9_]', '_', text)
 
-AGENTS_REGISTRY = {
-    "story_creator": create_story,
-    "parody_creator": create_parody,
-    "granny": create_granny_response,
-}
+# Enhanced agent function wrapper with support for both file-based and JSON agents
+def get_agent_function(agent_id: str):
+    """Get agent function from enhanced registry for use in LangGraph nodes"""
+    try:
+        agent = enhanced_agent_registry.get_agent(agent_id)
+        agent_type = enhanced_agent_registry.get_agent_type(agent_id)
+        
+        def agent_node_wrapper(state: State) -> dict:
+            """Wrapper function that adapts new agent interface to old format"""
+            result = agent.process_request(state)
+            
+            # Return old format for backward compatibility
+            agent_output_key = f"{agent_id}_output"
+            return {
+                agent_output_key: result["output"],
+                "previous_agent_output": result["output"],
+                "current_agent_id": agent_id,
+                # Add new metadata for enhanced functionality
+                "agent_type": agent_type,
+                "agent_metadata": result
+            }
+        
+        return agent_node_wrapper
+    except Exception as e:
+        print(f"⚠️ Failed to get agent {agent_id} from enhanced registry: {e}")
+        raise ValueError(f"Unknown agent ID: {agent_id}. Available agents: {enhanced_agent_registry.list_available_agents()}")
 
 TOOL_CONFIGS: Dict[str, ToolConfig] = {}
 
@@ -98,8 +123,9 @@ def build_dynamic_graph(agent_ids: List[str]):
                 return lambda state: execute_tool(state, TOOL_CONFIGS[node_key])
             builder.add_node(aid, make_tool_fn(aid))
             current_node = aid
-        elif aid in AGENTS_REGISTRY:
-            builder.add_node(aid, AGENTS_REGISTRY[aid])
+        elif aid in enhanced_agent_registry.list_available_agents():
+            agent_function = get_agent_function(aid)
+            builder.add_node(aid, agent_function)
             current_node = aid
         else:
             raise ValueError(f"Unknown agent ID {aid}")
@@ -120,7 +146,6 @@ class AgentConfig(BaseModel):
 class ChatSettings(BaseModel):
     agent_sequence: List[AgentConfig]
     supervisor_mode: bool = False  # Enable supervisor-based routing
-    supervisor_type: str = "basic"  # "basic" or "advanced"
 
 class MessageRequest(BaseModel):
     user_prompt: str
@@ -204,7 +229,7 @@ def build_execution_plan(enabled_agents: List[Dict[str, Any]], user_prompt: str 
     return execution_plan
 
 # Supervisor-based helper functions
-def build_supervisor_graph(supervisor_type: str = "basic", chat_config: Optional[dict] = None):
+def build_supervisor_graph(chat_config: Optional[dict] = None):
     """Build supervisor graph for intelligent agent routing with tool support"""
     if not SUPERVISOR_AVAILABLE:
         raise ValueError("Supervisor functionality not available")
@@ -253,11 +278,13 @@ def build_supervisor_graph(supervisor_type: str = "basic", chat_config: Optional
             from .tools.tool_executor import execute_intelligent_tools
             agent_state = execute_intelligent_tools(agent_state, granny_tools, "granny")
         
-        result = create_granny_response(agent_state)
+        # Use enhanced registry instead of hardcoded function
+        granny_agent = enhanced_agent_registry.get_agent("granny")
+        result = granny_agent.process_request(agent_state)
         return Command(
             goto="supervisor",
             update={"messages": state["messages"] + [
-                AIMessage(content=result["granny_output"], name="granny")
+                AIMessage(content=result["output"], name="granny")
             ]}
         )
     
@@ -285,11 +312,13 @@ def build_supervisor_graph(supervisor_type: str = "basic", chat_config: Optional
             from .tools.tool_executor import execute_intelligent_tools
             agent_state = execute_intelligent_tools(agent_state, story_tools, "story_creator")
         
-        result = create_story(agent_state)
+        # Use enhanced registry instead of hardcoded function
+        story_agent = enhanced_agent_registry.get_agent("story_creator")
+        result = story_agent.process_request(agent_state)
         return Command(
             goto="supervisor", 
             update={"messages": state["messages"] + [
-                AIMessage(content=result["story_output"], name="story_creator")
+                AIMessage(content=result["output"], name="story_creator")
             ]}
         )
     
@@ -317,11 +346,13 @@ def build_supervisor_graph(supervisor_type: str = "basic", chat_config: Optional
             from .tools.tool_executor import execute_intelligent_tools
             agent_state = execute_intelligent_tools(agent_state, parody_tools, "parody_creator")
         
-        result = create_parody(agent_state)
+        # Use enhanced registry instead of hardcoded function
+        parody_agent = enhanced_agent_registry.get_agent("parody_creator")
+        result = parody_agent.process_request(agent_state)
         return Command(
             goto="supervisor",
             update={"messages": state["messages"] + [
-                AIMessage(content=result["parody_output"], name="parody_creator")
+                AIMessage(content=result["output"], name="parody_creator")
             ]}
         )
     
@@ -339,157 +370,365 @@ def build_supervisor_graph(supervisor_type: str = "basic", chat_config: Optional
     
     return builder.compile()
 
-def process_supervisor_message(chat_id: str, user_prompt: str, supervisor_type: str = "basic"):
-    """Process a message using supervisor pattern with detailed tracking"""
-    chat = chats[chat_id]
+
+
+def process_multi_agent_supervisor_message(chat_id: str, user_prompt: str):
+    """Process message using enhanced supervisor with multi-agent support"""
     
-    # Check if enhanced supervisor is requested
-    if supervisor_type == "enhanced":
-        return process_enhanced_supervisor_message(chat_id, user_prompt)
+    print(f"\n{'='*80}")
+    print(f"🎮 CONTROL FLOW: WORKFLOW START - User request received")
+    print(f"🎮 CONTROL FLOW: Chat ID: {chat_id}")
+    print(f"🎮 CONTROL FLOW: User prompt: {user_prompt[:100]}...")
+    print(f"{'='*80}")
     
-    # First, run supervisor to determine which agent to use
-    supervisor_graph = build_supervisor_graph(supervisor_type, {})  # Empty config for initial routing
+    # Get chat history and state
+    chat_history = chats.get(chat_id, {}).get("history", [])
+    hist = chats.get(chat_id, {}).get("history", [])
     
-    # Prepare messages from chat history
-    messages = []
-    for msg in chat.get("history", []):
-        if msg["sender"] == "user":
-            messages.append(HumanMessage(content=msg["text"]))
-        elif msg["sender"] in ["granny", "story_creator", "parody_creator", "supervisor"]:
-            messages.append(AIMessage(content=msg["text"], name=msg["sender"]))
+    print(f"🎮 CONTROL FLOW: Supervisor taking initial control for planning")
     
-    # Add current user message
-    messages.append(HumanMessage(content=user_prompt))
-    
-    # Run supervisor to get routing decision
-    supervisor_result = supervisor_graph.invoke({"messages": messages})
-    
-    # Extract supervisor decision and chosen agent
-    supervisor_decision = None
-    chosen_agent = "unknown"
-    
-    for msg in supervisor_result["messages"]:
-        if hasattr(msg, 'name'):
-            if msg.name == "supervisor":
-                supervisor_decision = msg.content
-                # Try to extract agent choice from supervisor decision
-                if "granny" in msg.content.lower():
-                    chosen_agent = "granny"
-                elif "story" in msg.content.lower():
-                    chosen_agent = "story_creator" 
-                elif "parody" in msg.content.lower():
-                    chosen_agent = "parody_creator"
-    
-    # Now execute tools and agent for the chosen agent
-    tool_outputs = {}
-    agent_response = "No response generated"
-    
-    if chosen_agent != "unknown":
-        # Intelligent tool selection for supervisor mode
-        def determine_needed_tools(user_prompt: str, agent_name: str) -> list:
-            """Determine which tools an agent should use based on the request content"""
-            from .tools.tool_config import ToolConfig
-            tools = []
-            
-            prompt_lower = user_prompt.lower()
-            
-            # Web search tool - for current information, news, weather, etc.
-            web_search_triggers = [
-                "today", "current", "now", "latest", "recent", "news", 
-                "weather", "temperature", "forecast", "happening",
-                "what's", "what is", "price", "stock", "update"
-            ]
-            if any(trigger in prompt_lower for trigger in web_search_triggers):
-                tools.append(ToolConfig(name="web_search"))
-            
-            # Knowledgebase tool - for recipes, traditional knowledge, etc.
-            kb_triggers = [
-                "recipe", "cooking", "traditional", "romanian", "ciorba",
-                "soup", "food", "ingredient", "how to make", "prepare"
-            ]
-            if any(trigger in prompt_lower for trigger in kb_triggers):
-                # Try to find a relevant knowledgebase option
-                kb_option = None
-                if "ciorba" in prompt_lower or "soup" in prompt_lower:
-                    kb_option = "ciorba_recipe"
-                tools.append(ToolConfig(name="knowledgebase", option=kb_option))
-            
-            return tools
+    try:
+        # Enhanced supervisor analysis
+        print(f"🔍 DEBUG: process_multi_agent_supervisor_message called")
         
-        # Get intelligently determined tools for this request
-        intelligent_tools = determine_needed_tools(user_prompt, chosen_agent)
+        # Create enhanced supervisor
+        available_agents = enhanced_agent_registry.list_available_agents()
+        enhanced_supervisor = create_enhanced_supervisor(available_agents, {})
         
-        # Also check if user has manually configured tools for this agent
-        manual_tools = []
-        for config in chat.get("agent_sequence", []):
-            if config["id"] == chosen_agent and config.get("enabled") and config.get("tools"):
-                manual_tools = [
-                    ToolConfig(name=tool["name"], option=tool.get("option"))
-                    if isinstance(tool, dict) else ToolConfig(name=tool)
-                    for tool in config["tools"]
-                ]
-                break
+        print(f"🎮 CONTROL FLOW: Supervisor analyzing request and building execution plan")
+        # Analyze query and create execution plan
+        execution_plan = enhanced_supervisor.analyze_query(user_prompt)
         
-        # Combine intelligent and manual tools (intelligent takes priority)
-        all_tools = intelligent_tools + [t for t in manual_tools if t.name not in [it.name for it in intelligent_tools]]
+        print(f"🔍 DEBUG: Execution plan requires_multi_agent: {execution_plan.requires_multi_agent}")
+        print(f"🔍 DEBUG: Agent sequence: {execution_plan.agent_sequence}")
         
-        # Execute tools if any are needed
-        if all_tools:
-            from .tools.tool_executor import execute_intelligent_tools
+        if execution_plan.requires_multi_agent:
+            print(f"🎮 CONTROL FLOW: Supervisor determined multi-agent execution required")
+            print(f"🎮 CONTROL FLOW: Planned agent sequence: {execution_plan.agent_sequence}")
             
-            # Create a minimal agent config for tool execution
-            agent_config = {
-                "id": chosen_agent,
-                "enabled": True,
-                "tools": [{"name": tool.name, "option": tool.option} for tool in all_tools]
+            # Add initial supervisor message to history
+            supervisor_msg = {
+                "sender": "supervisor",
+                "text": f"Enhanced Analysis Results:\nStrategy: {execution_plan.strategy}\nPrimary Agent: {execution_plan.primary_agent}\nComponents Detected: {len(execution_plan.components)}\n" + 
+                       "\n".join([f"  {i+1}. {comp.intent} -> {comp.resource_type.value}: {comp.resource_id}" for i, comp in enumerate(execution_plan.components)]) +
+                       f"\nTools Required: {', '.join(execution_plan.tools_needed) if execution_plan.tools_needed else 'None'}\n" +
+                       f"Context Fusion: {execution_plan.context_fusion}",
+                "routing_decision": True,
+                "chosen_agent": execution_plan.primary_agent,
+                "supervisor_type": "enhanced"
             }
+            hist.append(supervisor_msg)
             
-            # Create state for tool execution
-            tool_state = State(
-                user_prompt=user_prompt,
-                history=[],
-                tool_outputs={},
-                agent_flow=[agent_config]
+            print(f"🎮 CONTROL FLOW: Supervisor added planning message to history")
+            print(f"🔍 DEBUG: Calling execute_multi_agent_orchestration...")
+            
+            return execute_multi_agent_orchestration(
+                execution_plan, user_prompt, chat_history, hist, enhanced_supervisor
             )
             
-            # Execute tools
-            tool_state = execute_intelligent_tools(tool_state, all_tools, chosen_agent)
-            tool_outputs = tool_state.tool_outputs
         else:
-            # No tools needed, create minimal config
-            agent_config = {"id": chosen_agent, "enabled": True, "tools": []}
+            print(f"🎮 CONTROL FLOW: Supervisor determined single-agent execution sufficient")
+            print(f"🎮 CONTROL FLOW: Delegating to single agent: {execution_plan.primary_agent}")
+            # Fall back to single agent execution
+            supervisor_msg = {
+                "sender": "supervisor", 
+                "text": f"Analysis Results:\nStrategy: {execution_plan.strategy}\nPrimary Agent: {execution_plan.primary_agent}\nTools Required: {', '.join(execution_plan.tools_needed) if execution_plan.tools_needed else 'None'}",
+                "routing_decision": True,
+                "chosen_agent": execution_plan.primary_agent,
+                "supervisor_type": "enhanced"
+            }
+            hist.append(supervisor_msg)
+            
+            return execute_single_agent_orchestration(
+                execution_plan, user_prompt, chat_history, hist, enhanced_supervisor
+            )
+            
+    except Exception as e:
+        error_msg = f"Enhanced supervisor processing failed: {str(e)}"
+        print(f"🎮 CONTROL FLOW: CRITICAL ERROR - Supervisor failed during planning: {str(e)}")
+        print(f"🔍 DEBUG: Exception in process_multi_agent_supervisor_message: {e}")
+        import traceback
+        traceback.print_exc()
         
-        # Now execute the chosen agent with tool outputs
-        agent_state = State(
-            user_prompt=user_prompt,
-            history=[],
-            tool_outputs=tool_outputs,
-            agent_flow=[agent_config] if agent_config else None
-        )
+        hist.append({
+            "sender": "system",
+            "text": error_msg,
+            "error": True
+        })
         
-        # Call the appropriate agent function
-        if chosen_agent == "granny":
-            from .granny.agent import create_granny_response
-            result = create_granny_response(agent_state)
-            agent_response = result.get("granny_output", "No response")
-        elif chosen_agent == "story_creator":
-            from .story_creator.agent import create_story
-            result = create_story(agent_state)
-            agent_response = result.get("story_output", "No response")
-        elif chosen_agent == "parody_creator":
-            from .parody_creator.agent import create_parody
-            result = create_parody(agent_state)
-            agent_response = result.get("parody_output", "No response")
+        return {
+            "system_error": error_msg,
+            "supervisor_routing": False,
+            "error": True
+        }
+
+def execute_multi_agent_orchestration(execution_plan, user_prompt, chat_history, hist, enhanced_supervisor):
+    """Execute multi-agent workflow with step-by-step tracking"""
+    tool_outputs = {}
+    agent_outputs = {}
+    
+    print("🎮 CONTROL FLOW: Supervisor taking control for multi-agent orchestration")
+    print(f"🎮 CONTROL FLOW: Supervisor planning execution sequence: {execution_plan.agent_sequence}")
+    
+    try:
+        # DON'T execute tools upfront - let agents call them when needed
+        # Tools will be executed by individual agents through their process_request method
+        
+        # Execute agents sequentially
+        print(f"🔍 DEBUG: Starting multi-agent execution with sequence: {execution_plan.agent_sequence}")
+        print(f"🎮 CONTROL FLOW: Supervisor beginning sequential agent execution")
+        
+        for i, agent_id in enumerate(execution_plan.agent_sequence):
+            print(f"\n{'='*60}")
+            print(f"🎮 CONTROL FLOW: Supervisor preparing to delegate to {agent_id} (step {i+1}/{len(execution_plan.agent_sequence)})")
+            print(f"🔍 DEBUG: Processing agent {i+1}/{len(execution_plan.agent_sequence)}: {agent_id}")
+            
+            # Add supervisor delegation message
+            hist.append({
+                "sender": "supervisor",
+                "text": f"🔄 Delegating to {agent_id} (step {i+1}/{len(execution_plan.agent_sequence)})",
+                "delegation": True,
+                "agent_delegated": agent_id,
+                "step": i+1
+            })
+            
+            print(f"🎮 CONTROL FLOW: Supervisor delegating control to {agent_id}")
+            
+            # Build context for this agent - ensure clean separation
+            if i == 0:
+                # First agent gets the original query only
+                agent_context = f"""Original request: {user_prompt}
+
+Instructions: You are {agent_id} in a multi-agent workflow. {enhanced_supervisor._get_agent_instructions(agent_id, execution_plan.context_fusion)}
+
+IMPORTANT: Only provide YOUR OWN response as {agent_id}. Do not generate responses for other agents in the sequence."""
+            else:
+                # Subsequent agents get previous outputs but with clear boundaries
+                previous_outputs = []
+                for prev_agent in execution_plan.agent_sequence[:i]:
+                    if prev_agent in agent_outputs:
+                        # Truncate long outputs but preserve full meaning
+                        output = agent_outputs[prev_agent]
+                        if len(output) > 500:
+                            output = output[:500] + "... [truncated]"
+                        previous_outputs.append(f"--- {prev_agent.upper()} OUTPUT ---\n{output}\n--- END {prev_agent.upper()} OUTPUT ---")
+                
+                agent_context = f"""Original request: {user_prompt}
+
+Previous Agent Results:
+{chr(10).join(previous_outputs)}
+
+Instructions: You are {agent_id} (agent {i+1} of {len(execution_plan.agent_sequence)}). {enhanced_supervisor._get_agent_instructions(agent_id, execution_plan.context_fusion)}
+
+IMPORTANT: Only provide YOUR OWN response as {agent_id}. Do not repeat or simulate responses from other agents. Build upon the previous work but respond only as yourself."""
+            
+            # Create State for this agent - let agent handle its own tools
+            agent_state = State(
+                user_prompt=agent_context,
+                history=chat_history,
+                tool_outputs={},  # Start fresh for each agent
+                agent_outputs=agent_outputs  # Pass previous agent outputs
+            )
+            
+            # Execute agent - agent will call tools if it needs them
+            try:
+                print(f"🔍 DEBUG: Checking if {agent_id} is in registry...")
+                available_agents = enhanced_agent_registry.list_available_agents()
+                print(f"🔍 DEBUG: Available agents: {available_agents}")
+                
+                if agent_id in available_agents:
+                    print(f"🔍 DEBUG: Getting agent {agent_id} from registry...")
+                    agent = enhanced_agent_registry.get_agent(agent_id)
+                    print(f"🔍 DEBUG: Executing agent {agent_id}...")
+                    print(f"🎮 CONTROL FLOW: {agent_id} taking control, processing request...")
+                    
+                    result = agent.process_request(agent_state)
+                    agent_response = result.get("output", "No response generated")
+                    
+                    print(f"🎮 CONTROL FLOW: {agent_id} completed processing, returning control to supervisor")
+                    print(f"🔍 DEBUG: Agent {agent_id} response: {agent_response[:100]}...")
+                    
+                    # Check if agent used tools and add them to history
+                    if "tool_outputs" in result and result["tool_outputs"]:
+                        print(f"🎮 CONTROL FLOW: {agent_id} used tools during execution:")
+                        for tool_name, tool_result in result["tool_outputs"].items():
+                            print(f"🎮 CONTROL FLOW: - {agent_id} called tool: {tool_name}")
+                            hist.append({
+                                "sender": "tool",
+                                "text": tool_result.get("result", str(tool_result)),
+                                "tool_id": tool_name,
+                                "called_by_agent": agent_id,
+                                "via_supervisor": False  # Called by agent, not supervisor
+                            })
+                            print(f"🔍 DEBUG: Added tool output from {agent_id} calling {tool_name}")
+                    else:
+                        print(f"🎮 CONTROL FLOW: {agent_id} did not use any tools")
+                    
+                    # Store agent output
+                    agent_outputs[agent_id] = agent_response
+                    
+                    # Add agent response to history
+                    hist.append({
+                        "sender": agent_id,
+                        "text": agent_response,
+                        "via_supervisor": True,
+                        "supervisor_type": "enhanced",
+                        "step_in_sequence": i+1,
+                        "total_steps": len(execution_plan.agent_sequence)
+                    })
+                    print(f"🔍 DEBUG: Added {agent_id} response to history")
+                    print(f"🎮 CONTROL FLOW: Supervisor received output from {agent_id}")
+                    
+                    # Add supervisor acknowledgment
+                    if i < len(execution_plan.agent_sequence) - 1:
+                        next_agent = execution_plan.agent_sequence[i + 1]
+                        ack_text = f"✅ Received output from {agent_id}, proceeding to next step..."
+                        print(f"🎮 CONTROL FLOW: Supervisor acknowledging {agent_id}, preparing to delegate to {next_agent}")
+                    else:
+                        ack_text = f"✅ Multi-agent workflow completed. Final response from {agent_id}."
+                        print(f"🎮 CONTROL FLOW: Supervisor acknowledging {agent_id}, workflow complete")
+                    
+                    hist.append({
+                        "sender": "supervisor",
+                        "text": ack_text,
+                        "acknowledgment": True,
+                        "agent_completed": agent_id
+                    })
+                    print(f"🔍 DEBUG: Added supervisor acknowledgment for {agent_id}")
+                    
+                else:
+                    error_msg = f"Agent '{agent_id}' not available in registry"
+                    print(f"🔍 DEBUG: ERROR - {error_msg}")
+                    print(f"🎮 CONTROL FLOW: ERROR - Supervisor cannot delegate to {agent_id} (not in registry)")
+                    agent_outputs[agent_id] = error_msg
+                    hist.append({
+                        "sender": "system",
+                        "text": error_msg,
+                        "error": True,
+                        "agent_id": agent_id
+                    })
+            except Exception as e:
+                error_msg = f"Exception executing agent {agent_id}: {str(e)}"
+                print(f"🔍 DEBUG: EXCEPTION - {error_msg}")
+                print(f"🎮 CONTROL FLOW: ERROR - Exception while {agent_id} had control: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                agent_outputs[agent_id] = error_msg
+                hist.append({
+                    "sender": "system",
+                    "text": error_msg,
+                    "error": True,
+                    "agent_id": agent_id
+                })
+        
+        print(f"\n{'='*60}")
+        print(f"🎮 CONTROL FLOW: Supervisor concluding multi-agent orchestration")
+        print(f"🎮 CONTROL FLOW: All agents completed: {list(agent_outputs.keys())}")
+        
+        # Return final result
+        final_agent = execution_plan.agent_sequence[-1] if execution_plan.agent_sequence else "unknown"
+        final_response = agent_outputs.get(final_agent, "No final response generated")
+        
+        print(f"🎮 CONTROL FLOW: Supervisor preparing final result with {final_agent}'s output")
+        
+        return {
+            "agent_response": final_response,
+            "chosen_agent": final_agent,
+            "supervisor_decision": f"Multi-agent workflow: {' → '.join(execution_plan.agent_sequence)}",
+            "tool_outputs": tool_outputs,
+            "supervisor_routing": True,
+            "supervisor_type": "enhanced",
+            "multi_agent_execution": True,
+            "agent_sequence": execution_plan.agent_sequence,
+            "all_agent_outputs": agent_outputs
+        }
+        
+    except Exception as e:
+        error_msg = f"Multi-agent orchestration failed: {str(e)}"
+        print(f"🎮 CONTROL FLOW: CRITICAL ERROR - Supervisor lost control due to: {str(e)}")
+        hist.append({
+            "sender": "system",
+            "text": error_msg,
+            "error": True
+        })
+        
+        return {
+            "system_error": error_msg,
+            "supervisor_routing": False,
+            "error": True
+        }
+
+def execute_single_agent_orchestration(execution_plan, user_prompt, chat_history, hist, enhanced_supervisor):
+    """Execute single agent workflow"""
+    # This is the original single-agent logic
+    tool_outputs = {}
+    
+    # Execute tools
+    if "web_search" in execution_plan.tools_needed:
+        from .tools.tool_config import _generate_web_search_query
+        from .tools.web_search import run_tool
+        
+        search_query = _generate_web_search_query(user_prompt)
+        search_result = run_tool(search_query)
+        tool_outputs["web_search"] = {
+            "query": search_query,
+            "result": search_result
+        }
+        
+        hist.append({
+            "sender": "tool",
+            "text": search_result,
+            "tool_id": "web_search",
+            "for_agent": execution_plan.primary_agent,
+            "via_supervisor": True
+        })
+    
+    # Execute the primary agent
+    enhanced_context = f"""Original request: {user_prompt}
+
+Tool Results:
+{json.dumps(tool_outputs, indent=2) if tool_outputs else "No tools executed"}
+
+Instructions: Respond as {execution_plan.primary_agent} using the {execution_plan.context_fusion} approach."""
+    
+    agent_state = State(
+        user_prompt=enhanced_context,
+        history=chat_history,
+        tool_outputs=tool_outputs,
+        agent_flow=[{"id": execution_plan.primary_agent, "enabled": True, "tools": []}]
+    )
+    
+    # Execute the chosen agent
+    agent_response = "No response generated"
+    try:
+        if execution_plan.primary_agent in enhanced_agent_registry.list_available_agents():
+            agent = enhanced_agent_registry.get_agent(execution_plan.primary_agent)
+            result = agent.process_request(agent_state)
+            agent_response = result.get("output", "No response generated")
+        else:
+            agent_response = f"Agent '{execution_plan.primary_agent}' not available in registry"
+    except Exception as e:
+        print(f"Error executing agent {execution_plan.primary_agent}: {e}")
+        agent_response = f"Error executing agent: {str(e)}"
+    
+    # Add agent response to history
+    hist.append({
+        "sender": execution_plan.primary_agent,
+        "text": agent_response,
+        "via_supervisor": True,
+        "supervisor_type": "enhanced"
+    })
     
     return {
-        "supervisor_decision": supervisor_decision,
-        "chosen_agent": chosen_agent,
         "agent_response": agent_response,
+        "chosen_agent": execution_plan.primary_agent,
+        "supervisor_decision": f"Single agent routing to {execution_plan.primary_agent}",
         "tool_outputs": tool_outputs,
-        "supervisor_type": supervisor_type
+        "supervisor_routing": True,
+        "supervisor_type": "enhanced"
     }
 
-def process_enhanced_supervisor_message(chat_id: str, user_prompt: str):
+def process_supervisor_message(chat_id: str, user_prompt: str):
     """Process message using enhanced supervisor with query decomposition and orchestration"""
     try:
         from .supervisor.enhanced_supervisor import EnhancedSupervisor
@@ -513,9 +752,10 @@ def process_enhanced_supervisor_message(chat_id: str, user_prompt: str):
             print(f"Knowledge base loading error: {e}")
             kb_metadata = {}
         
-        # Create enhanced supervisor
+        # Create enhanced supervisor with all available agents
+        available_agents = enhanced_agent_registry.list_available_agents()
         enhanced_supervisor = EnhancedSupervisor(
-            available_agents=["granny", "story_creator", "parody_creator"],
+            available_agents=available_agents,
             knowledgebase_metadata=kb_metadata
         )
         
@@ -538,23 +778,70 @@ Components Detected: {len(execution_plan.components)}"""
         
         plan_explanation += f"\nContext Fusion: {execution_plan.context_fusion}"
         
-        # Execute the plan (simplified for now)
-        tool_outputs = {}
+        # Get conversation history from chat
+        chat_history = []
+        if chat_id in chats:
+            chat = chats[chat_id]
+            chat_history = [ChatMessage(**m) for m in chat.get("history", [])]
         
-        # Execute tools
-        if "web_search" in execution_plan.tools_needed:
-            from .tools.tool_config import _generate_web_search_query
-            from .tools.web_search import run_tool
+        # Execute the plan - check if multi-agent execution is needed
+        if execution_plan.requires_multi_agent:
+            # Execute multi-agent plan
+            execution_results = enhanced_supervisor.execute_multi_agent_plan(
+                execution_plan, 
+                user_prompt, 
+                chat_history, 
+                enhanced_agent_registry
+            )
             
-            search_query = _generate_web_search_query(user_prompt)
-            search_result = run_tool(search_query)
-            tool_outputs["web_search"] = {
-                "query": search_query,
-                "result": search_result
+            # Build multi-agent plan explanation
+            multi_agent_explanation = f"""Multi-Agent Enhanced Analysis:
+Strategy: {execution_plan.strategy}
+Agent Sequence: {' → '.join(execution_plan.agent_sequence)}
+Components Detected: {len(execution_plan.components)}"""
+            
+            for i, component in enumerate(execution_plan.components, 1):
+                multi_agent_explanation += f"\n  {i}. {component.intent} -> {component.resource_type.value}: {component.resource_id}"
+            
+            if execution_plan.tools_needed:
+                multi_agent_explanation += f"\nTools Required: {', '.join(execution_plan.tools_needed)}"
+            
+            multi_agent_explanation += f"\nContext Fusion: {execution_plan.context_fusion}"
+            multi_agent_explanation += f"\nExecution Sequence: {' → '.join(execution_results['execution_sequence'])}"
+            
+            return {
+                "supervisor_decision": multi_agent_explanation,
+                "chosen_agent": execution_plan.agent_sequence[-1],  # Last agent in sequence
+                "agent_response": execution_results["final_agent_response"],
+                "tool_outputs": execution_results["tool_outputs"],
+                "supervisor_type": "enhanced",
+                "execution_plan": {
+                    "strategy": execution_plan.strategy,
+                    "components": len(execution_plan.components),
+                    "context_fusion": execution_plan.context_fusion,
+                    "multi_agent": True,
+                    "agent_sequence": execution_plan.agent_sequence
+                },
+                "multi_agent_results": execution_results
             }
-        
-        # Execute the primary agent with enhanced context
-        enhanced_context = f"""Original request: {user_prompt}
+        else:
+            # Single agent execution (original logic)
+            tool_outputs = {}
+            
+            # Execute tools
+            if "web_search" in execution_plan.tools_needed:
+                from .tools.tool_config import _generate_web_search_query
+                from .tools.web_search import run_tool
+                
+                search_query = _generate_web_search_query(user_prompt)
+                search_result = run_tool(search_query)
+                tool_outputs["web_search"] = {
+                    "query": search_query,
+                    "result": search_result
+                }
+            
+            # Execute the primary agent with enhanced context
+            enhanced_context = f"""Original request: {user_prompt}
 
 Enhanced Analysis:
 {plan_explanation}
@@ -563,56 +850,225 @@ Tool Results:
 {json.dumps(tool_outputs, indent=2) if tool_outputs else "No tools executed"}
 
 Instructions: Respond as {execution_plan.primary_agent} using the {execution_plan.context_fusion} approach."""
-        
-        # Create agent state with enhanced context
-        agent_state = State(
-            user_prompt=enhanced_context,
-            history=[],
-            tool_outputs=tool_outputs,
-            agent_flow=[{"id": execution_plan.primary_agent, "enabled": True, "tools": []}]
-        )
-        
-        # Execute the chosen agent
-        agent_response = "No response generated"
-        if execution_plan.primary_agent == "granny":
-            from .granny.agent import create_granny_response
-            result = create_granny_response(agent_state)
-            agent_response = result.get("granny_output", "No response")
-        elif execution_plan.primary_agent == "story_creator":
-            from .story_creator.agent import create_story
-            result = create_story(agent_state)
-            agent_response = result.get("story_output", "No response")
-        elif execution_plan.primary_agent == "parody_creator":
-            from .parody_creator.agent import create_parody
-            result = create_parody(agent_state)
-            agent_response = result.get("parody_output", "No response")
-        
-        return {
-            "supervisor_decision": plan_explanation,
-            "chosen_agent": execution_plan.primary_agent,
-            "agent_response": agent_response,
-            "tool_outputs": tool_outputs,
-            "supervisor_type": "enhanced",
-            "execution_plan": {
-                "strategy": execution_plan.strategy,
-                "components": len(execution_plan.components),
-                "context_fusion": execution_plan.context_fusion
+            
+            # Create agent state with enhanced context AND conversation history
+            agent_state = State(
+                user_prompt=enhanced_context,
+                history=chat_history,
+                tool_outputs=tool_outputs,
+                agent_flow=[{"id": execution_plan.primary_agent, "enabled": True, "tools": []}]
+            )
+            
+            # Execute the chosen agent using the enhanced registry
+            agent_response = "No response generated"
+            try:
+                if execution_plan.primary_agent in enhanced_agent_registry.list_available_agents():
+                    agent = enhanced_agent_registry.get_agent(execution_plan.primary_agent)
+                    result = agent.process_request(agent_state)
+                    agent_response = result.get("output", "No response generated")
+                else:
+                    agent_response = f"Agent '{execution_plan.primary_agent}' not available in registry"
+            except Exception as e:
+                print(f"Error executing agent {execution_plan.primary_agent}: {e}")
+                agent_response = f"Error executing agent: {str(e)}"
+            
+            return {
+                "supervisor_decision": plan_explanation,
+                "chosen_agent": execution_plan.primary_agent,
+                "agent_response": agent_response,
+                "tool_outputs": tool_outputs,
+                "supervisor_type": "enhanced",
+                "execution_plan": {
+                    "strategy": execution_plan.strategy,
+                    "components": len(execution_plan.components),
+                    "context_fusion": execution_plan.context_fusion
+                }
             }
-        }
         
     except Exception as e:
         print(f"Enhanced supervisor failed: {e}")
         import traceback
         traceback.print_exc()
         
-        # Fallback to basic supervisor
-        return process_supervisor_message(chat_id, user_prompt, "basic")
+        # Return error if enhanced supervisor fails
+        return {
+            "supervisor_decision": f"Enhanced supervisor failed: {str(e)}",
+            "chosen_agent": "story_creator",
+            "agent_response": "I apologize, but I encountered an error processing your request. Please try again.",
+            "tool_outputs": {},
+            "supervisor_type": "enhanced",
+            "execution_plan": {
+                "strategy": "error_fallback",
+                "components": 0,
+                "context_fusion": "error_handling"
+            }
+        }
 
 @app.get("/knowledgebase")
 def get_knowledgebase():
     kb_path = Path(__file__).parent.parent / "data" / "knowledgebase.json"
     with open(kb_path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+@app.get("/agents")
+def list_available_agents():
+    """Get all available agents with their metadata"""
+    try:
+        agents_metadata = enhanced_agent_registry.list_all_agents_metadata()
+        return {
+            "agents": agents_metadata,
+            "total": len(agents_metadata),
+            "available_ids": enhanced_agent_registry.list_available_agents()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing agents: {str(e)}")
+
+@app.get("/agents/{agent_id}")
+def get_agent_info(agent_id: str):
+    """Get detailed information about a specific agent"""
+    try:
+        if agent_id not in enhanced_agent_registry.list_available_agents():
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+        
+        metadata = enhanced_agent_registry.get_agent_metadata(agent_id)
+        return metadata
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting agent info: {str(e)}")
+
+@app.get("/agents/capabilities/{capability}")
+def find_agents_by_capability(capability: str):
+    """Find agents that support a specific capability"""
+    try:
+        matching_agents = enhanced_agent_registry.find_agents_by_capability(capability)
+        agents_info = []
+        
+        for agent_id in matching_agents:
+            try:
+                metadata = enhanced_agent_registry.get_agent_metadata(agent_id)
+                agents_info.append(metadata)
+            except Exception as e:
+                print(f"⚠️ Error getting info for agent {agent_id}: {e}")
+        
+        return {
+            "capability": capability,
+            "matching_agents": agents_info,
+            "count": len(agents_info)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error finding agents: {str(e)}")
+
+@app.get("/agents/skills/{skill_name}")
+def find_agents_by_skill(skill_name: str):
+    """Find JSON agents that have a specific skill"""
+    try:
+        matching_agents = enhanced_agent_registry.find_agents_by_skill(skill_name)
+        agents_info = []
+        
+        for agent_id in matching_agents:
+            try:
+                metadata = enhanced_agent_registry.get_agent_metadata(agent_id)
+                agents_info.append(metadata)
+            except Exception as e:
+                print(f"⚠️ Error getting info for agent {agent_id}: {e}")
+        
+        return {
+            "skill": skill_name,
+            "matching_agents": agents_info,
+            "count": len(agents_info)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error finding agents by skill: {str(e)}")
+
+@app.post("/agents/reload")
+def reload_agents():
+    """Reload all agents (useful for development)"""
+    try:
+        enhanced_agent_registry.reload_agents()
+        agents_metadata = enhanced_agent_registry.list_all_agents_metadata()
+        return {
+            "message": "Agents reloaded successfully",
+            "agents": agents_metadata,
+            "total": len(agents_metadata)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reloading agents: {str(e)}")
+
+
+@app.get("/skills")
+def get_all_skills():
+    """Get all available skills with their metadata"""
+    try:
+        import json
+        import os
+        
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'agents_config.json')
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config_data = json.load(f)
+        
+        skills = config_data.get('skills', {})
+        skills_list = []
+        
+        for skill_id, skill_config in skills.items():
+            skills_list.append({
+                "id": skill_id,
+                "name": skill_config.get("name", skill_id.title()),
+                "description": skill_config.get("description", f"Skill: {skill_id}"),
+                "function": skill_config.get("function", f"{skill_id}_skill"),
+                "parameters": skill_config.get("parameters", {}),
+                "category": skill_config.get("category", "general")
+            })
+        
+        return {
+            "skills": skills_list,
+            "total": len(skills_list),
+            "success": True
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading skills: {str(e)}")
+
+
+@app.get("/tools")
+def get_all_tools():
+    """Get all available tools with their metadata"""
+    try:
+        from .tools.tool_config import get_all_available_tools, get_tool_description
+        
+        all_tools = get_all_available_tools()
+        tools_list = []
+        
+        for tool_name in all_tools:
+            tool_metadata = get_tool_description(tool_name)
+            if tool_metadata:
+                tools_list.append({
+                    "id": tool_name,
+                    "name": tool_metadata.name,
+                    "description": tool_metadata.description,
+                    "use_cases": tool_metadata.use_cases,
+                    "input_format": tool_metadata.input_format,
+                    "confidence_threshold": tool_metadata.confidence_threshold,
+                    "fallback_behavior": tool_metadata.fallback_behavior
+                })
+            else:
+                # Fallback for tools without metadata
+                tools_list.append({
+                    "id": tool_name,
+                    "name": tool_name.replace("_", " ").title(),
+                    "description": f"Tool: {tool_name}",
+                    "use_cases": [],
+                    "input_format": "General input",
+                    "confidence_threshold": 0.7,
+                    "fallback_behavior": "inform_user"
+                })
+        
+        return {
+            "tools": tools_list,
+            "total": len(tools_list),
+            "success": True
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading tools: {str(e)}")
 
 @app.get("/chats")
 def list_chats():
@@ -642,7 +1098,7 @@ def create_chat():
         "agent_sequence": [], 
         "history": [],
         "supervisor_mode": False,
-        "supervisor_type": "basic"
+        "supervisor_type": "enhanced"
     }
     return chats[chat_id]
 
@@ -679,9 +1135,10 @@ async def stream_message(chat_id: str, req: MessageRequest):
     
     async def stream_generator():
         import json
-        from .granny.agent import create_granny_response_stream
-        from .story_creator.agent import create_story_response_stream
-        from .parody_creator.agent import create_parody_response_stream
+        # Legacy imports removed - now using enhanced_agent_registry for streaming too
+        # from .granny.agent import create_granny_response_stream
+        # from .story_creator.agent import create_story_response_stream  
+        # from .parody_creator.agent import create_parody_response_stream
         
         hist = chat["history"]
         hist.append({"sender": "user", "text": req.user_prompt})
@@ -690,52 +1147,74 @@ async def stream_message(chat_id: str, req: MessageRequest):
         if chat.get("supervisor_mode", False) and SUPERVISOR_AVAILABLE:
             try:
                 # Process with supervisor
-                result = process_supervisor_message(
+                result = process_multi_agent_supervisor_message(
                     chat_id, 
-                    req.user_prompt, 
-                    chat.get("supervisor_type", "basic")
+                    req.user_prompt
                 )
                 
-                # Stream supervisor decision if available
-                if result["supervisor_decision"]:
-                    supervisor_msg = {
-                        "sender": "supervisor",
-                        "text": result["supervisor_decision"],
-                        "routing_decision": True,
-                        "chosen_agent": result["chosen_agent"],
+                # Check if this is a multi-agent response
+                if result.get("multi_agent_execution", False):
+                    # For multi-agent: all messages were already added to hist during orchestration
+                    # Stream all messages that were added during orchestration (everything after user message)
+                    print(f"🔍 DEBUG: Multi-agent streaming - hist has {len(hist)} messages")
+                    
+                    # Find the last user message (the one we just processed)
+                    user_msg_index = -1
+                    for i in range(len(hist) - 1, -1, -1):
+                        if hist[i].get("sender") == "user" and hist[i].get("text") == req.user_prompt:
+                            user_msg_index = i
+                            break
+                    
+                    # Stream all messages added after the user message
+                    if user_msg_index >= 0:
+                        for msg in hist[user_msg_index + 1:]:
+                            yield json.dumps(msg) + "\n"
+                            print(f"🔍 DEBUG: Streamed message from {msg.get('sender', 'unknown')}")
+                    else:
+                        print(f"🔍 DEBUG: Could not find user message to start streaming from")
+                
+                else:
+                    # Single-agent logic (original)
+                    # Stream supervisor decision if available
+                    if result["supervisor_decision"]:
+                        supervisor_msg = {
+                            "sender": "supervisor",
+                            "text": result["supervisor_decision"],
+                            "routing_decision": True,
+                            "chosen_agent": result["chosen_agent"],
+                            "supervisor_type": result["supervisor_type"]
+                        }
+                        hist.append(supervisor_msg)
+                        yield json.dumps(supervisor_msg) + "\n"
+                    
+                    # Stream tool outputs if any were used
+                    if result.get("tool_outputs"):
+                        for tool_name, tool_result in result["tool_outputs"].items():
+                            # Extract text from result (could be string or dict)
+                            if isinstance(tool_result, dict):
+                                text_result = tool_result.get("result", str(tool_result))
+                            else:
+                                text_result = tool_result
+                            
+                            tool_msg = {
+                                "sender": "tool", 
+                                "text": text_result, 
+                                "tool_id": tool_name, 
+                                "for_agent": result["chosen_agent"],
+                                "via_supervisor": True
+                            }
+                            hist.append(tool_msg)
+                            yield json.dumps(tool_msg) + "\n"
+                    
+                    # Stream the chosen agent's response
+                    agent_msg = {
+                        "sender": result["chosen_agent"],
+                        "text": result["agent_response"],
+                        "via_supervisor": True,
                         "supervisor_type": result["supervisor_type"]
                     }
-                    hist.append(supervisor_msg)
-                    yield json.dumps(supervisor_msg) + "\n"
-                
-                # Stream tool outputs if any were used
-                if result.get("tool_outputs"):
-                    for tool_name, tool_result in result["tool_outputs"].items():
-                        # Extract text from result (could be string or dict)
-                        if isinstance(tool_result, dict):
-                            text_result = tool_result.get("result", str(tool_result))
-                        else:
-                            text_result = tool_result
-                        
-                        tool_msg = {
-                            "sender": "tool", 
-                            "text": text_result, 
-                            "tool_id": tool_name, 
-                            "for_agent": result["chosen_agent"],
-                            "via_supervisor": True
-                        }
-                        hist.append(tool_msg)
-                        yield json.dumps(tool_msg) + "\n"
-                
-                # Stream the chosen agent's response
-                agent_msg = {
-                    "sender": result["chosen_agent"],
-                    "text": result["agent_response"],
-                    "via_supervisor": True,
-                    "supervisor_type": result["supervisor_type"]
-                }
-                hist.append(agent_msg)
-                yield json.dumps(agent_msg) + "\n"
+                    hist.append(agent_msg)
+                    yield json.dumps(agent_msg) + "\n"
                 
                 save_chats()
                 return
@@ -867,10 +1346,12 @@ async def stream_message(chat_id: str, req: MessageRequest):
             }
             yield json.dumps(start_msg) + "\n"
             
-            # Stream the agent's response
+            # Stream the agent's response using enhanced registry
             full_response = ""
-            if agent_id == "granny":
-                for chunk in create_granny_response_stream(current_state):
+            try:
+                # Get agent from enhanced registry and stream response
+                agent = enhanced_agent_registry.get_agent(agent_id)
+                for chunk in agent.process_request_stream(current_state):
                     full_response += chunk
                     chunk_msg = {
                         "sender": agent_id,
@@ -878,24 +1359,16 @@ async def stream_message(chat_id: str, req: MessageRequest):
                         "stream_chunk": True
                     }
                     yield json.dumps(chunk_msg) + "\n"
-            elif agent_id == "story_creator":
-                for chunk in create_story_response_stream(current_state):
-                    full_response += chunk
-                    chunk_msg = {
-                        "sender": agent_id,
-                        "text": chunk,
-                        "stream_chunk": True
-                    }
-                    yield json.dumps(chunk_msg) + "\n"
-            elif agent_id == "parody_creator":
-                for chunk in create_parody_response_stream(current_state):
-                    full_response += chunk
-                    chunk_msg = {
-                        "sender": agent_id,
-                        "text": chunk,
-                        "stream_chunk": True
-                    }
-                    yield json.dumps(chunk_msg) + "\n"
+            except Exception as e:
+                # Fallback if streaming fails
+                error_msg = {
+                    "sender": agent_id,
+                    "text": f"Error streaming from {agent_id}: {str(e)}",
+                    "stream_chunk": True,
+                    "error": True
+                }
+                yield json.dumps(error_msg) + "\n"
+                full_response = f"Error: {str(e)}"
             
             # Signal end of agent response and save full response
             end_msg = {
@@ -920,63 +1393,11 @@ def send_message(chat_id: str, req: MessageRequest):
     # Check if supervisor mode is enabled
     if chat.get("supervisor_mode", False) and SUPERVISOR_AVAILABLE:
         try:
-            # Use supervisor routing
-            result = process_supervisor_message(
-                chat_id, 
-                req.user_prompt, 
-                chat.get("supervisor_type", "basic")
-            )
-            
-            # Update chat history with detailed supervisor tracking
-            hist = chat["history"]
-            hist.append({"sender": "user", "text": req.user_prompt})
-            
-            # Add supervisor decision if available
-            if result["supervisor_decision"]:
-                hist.append({
-                    "sender": "supervisor",
-                    "text": result["supervisor_decision"],
-                    "routing_decision": True,
-                    "chosen_agent": result["chosen_agent"],
-                    "supervisor_type": result["supervisor_type"]
-                })
-            
-            # Add tool outputs if any were used
-            if result.get("tool_outputs"):
-                for tool_name, tool_result in result["tool_outputs"].items():
-                    # Extract text from result (could be string or dict)
-                    if isinstance(tool_result, dict):
-                        text_result = tool_result.get("result", str(tool_result))
-                    else:
-                        text_result = tool_result
-                    
-                    tool_msg = {
-                        "sender": "tool", 
-                        "text": text_result, 
-                        "tool_id": tool_name, 
-                        "for_agent": result["chosen_agent"],
-                        "via_supervisor": True
-                    }
-                    hist.append(tool_msg)
-            
-            # Add the chosen agent's response
-            hist.append({
-                "sender": result["chosen_agent"],
-                "text": result["agent_response"],
-                "via_supervisor": True,
-                "supervisor_type": result["supervisor_type"]
-            })
+            # Use enhanced multi-agent supervisor orchestration
+            result = process_multi_agent_supervisor_message(chat_id, req.user_prompt)
             
             save_chats()
-            
-            return {
-                "agent_response": result["agent_response"],
-                "chosen_agent": result["chosen_agent"],
-                "supervisor_decision": result["supervisor_decision"],
-                "tool_outputs": result.get("tool_outputs", {}),
-                "supervisor_routing": True,
-                "supervisor_type": result["supervisor_type"]
-            }
+            return result
             
         except Exception as e:
             print(f"Supervisor routing failed: {e}")
@@ -1058,7 +1479,7 @@ def send_message(chat_id: str, req: MessageRequest):
     return out.dict(exclude_none=True)
 
 @app.post("/chats/{chat_id}/supervisor")
-def toggle_supervisor_mode(chat_id: str, enabled: bool = True, supervisor_type: str = "basic"):
+def toggle_supervisor_mode(chat_id: str, enabled: bool = True):
     """Convenience endpoint to enable/disable supervisor mode for a chat"""
     if chat_id not in chats:
         raise HTTPException(404, "Chat not found")
@@ -1067,12 +1488,12 @@ def toggle_supervisor_mode(chat_id: str, enabled: bool = True, supervisor_type: 
         raise HTTPException(400, "Supervisor functionality not available")
     
     chats[chat_id]["supervisor_mode"] = enabled
-    chats[chat_id]["supervisor_type"] = supervisor_type
+    chats[chat_id]["supervisor_type"] = "enhanced"  # Always use enhanced
     save_chats()
     
     return {
         "supervisor_mode": enabled,
-        "supervisor_type": supervisor_type,
+        "supervisor_type": "enhanced",
         "message": f"Supervisor mode {'enabled' if enabled else 'disabled'} for chat {chat_id}"
     }
 
@@ -1085,7 +1506,7 @@ def get_supervisor_status(chat_id: str):
     chat = chats[chat_id]
     return {
         "supervisor_mode": chat.get("supervisor_mode", False),
-        "supervisor_type": chat.get("supervisor_type", "basic"),
+        "supervisor_type": "enhanced",
         "supervisor_available": SUPERVISOR_AVAILABLE
     }
 

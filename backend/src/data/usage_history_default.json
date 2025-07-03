@@ -44,15 +44,34 @@
       "user_feedback": null,
       "timestamp": "2025-07-01T12:12:21.331813",
       "success": true
+    },
+    {
+      "tool_name": "web_search",
+      "query": "weather Bucharest today",
+      "result": "• Weather in Bucharest\nhttps://www.weatherapi.com/\n{'location': {'name': 'Bucharest', 'region': 'Bucuresti', 'country': 'Romania', 'lat': 44.4333, 'lon': 26.1, 'tz_id': 'Europe/Bucharest', 'localtime_epoch': 1751459193, 'localtime': '2025-07-02 15:26'}, 'current': {'last_updated_epoch': 1751458500, '...\n\n• February 2025 Weather History in Bucharest Romania\nhttps://weatherspark.com/h/m/93241/2025/2/Historical-Weather-in-February-2025-in-Bucharest-Romania\nSee all nearby weather stations This report shows the past weather for Bucharest, providing a weather history for February 2025. It features all historical weather data series we have available, including the Bucharest temperature history for Februar...\n\n• Bucharest weather in July 2025 | Bucharest 14 day weather\nhttps://www.weather25.com/europe/romania/bucuresti/bucharest?page=month&month=July\nFull weather forecast for Bucharest in July 2025. Check the temperatures, chance of rain and more in Bucharest during July....",
+      "confidence_score": 0.6499999999999999,
+      "user_feedback": null,
+      "timestamp": "2025-07-02T15:27:44.848820",
+      "success": true
+    },
+    {
+      "tool_name": "web_search",
+      "query": "\"temperature București azi\"",
+      "result": "No search results found",
+      "confidence_score": 0.775,
+      "user_feedback": null,
+      "timestamp": "2025-07-03T12:25:31.055598",
+      "success": true
     }
   ],
   "user_preferences": {
     "preferred_tools": {
-      "web_search": 0.6
+      "web_search": 0.7
     },
     "query_patterns": {
       "web_search": [
-        "separate your traces from"
+        "separate your traces from",
+        "\"temperature București azi\""
       ]
     },
     "feedback_history": [],

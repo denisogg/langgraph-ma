@@ -56,9 +56,6 @@ if (typeof document !== 'undefined') {
   document.head.appendChild(styleSheet);
 }
 
-const ALL_AGENTS = ["granny", "story_creator", "parody_creator"];
-const ALL_TOOLS = ["web_search", "knowledgebase"];
-
 export default function App() {
   const [chats, setChats] = useState([]);
   const [current, setCurrent] = useState(null);
@@ -68,8 +65,16 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [knowledgebaseOptions, setKnowledgebaseOptions] = useState({});
   const [supervisorMode, setSupervisorMode] = useState(false);
-  const [supervisorType, setSupervisorType] = useState("basic");
+  const [supervisorType, setSupervisorType] = useState("enhanced");
   const [supervisorAvailable, setSupervisorAvailable] = useState(false);
+  
+  // Dynamic loading state for agents and tools
+  const [allAgents, setAllAgents] = useState([]);
+  const [allTools, setAllTools] = useState([]);
+  const [agentsLoading, setAgentsLoading] = useState(true);
+  const [toolsLoading, setToolsLoading] = useState(true);
+  const [agentFilter, setAgentFilter] = useState("");
+  const [selectedCapability, setSelectedCapability] = useState("");
 
   const dragItem = useRef();
   const dragType = useRef();
@@ -79,7 +84,74 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
+  // Load agents from API
+  const loadAgents = async () => {
+    try {
+      setAgentsLoading(true);
+      const response = await axios.get("http://localhost:8000/agents");
+      setAllAgents(response.data.agents);
+      console.log("Loaded agents:", response.data.agents);
+    } catch (err) {
+      console.error("Error loading agents:", err);
+      // Fallback to original agents if API fails
+      setAllAgents([
+        { id: "granny", name: "Romanian Grandmother", capabilities: ["cooking", "wisdom"], skills: [] },
+        { id: "story_creator", name: "Creative Story Writer", capabilities: ["creative_writing"], skills: ["creative_writing"] },
+        { id: "parody_creator", name: "Parody Creator", capabilities: ["humor"], skills: ["creative_writing"] }
+      ]);
+    } finally {
+      setAgentsLoading(false);
+    }
+  };
+
+  // Load tools from API
+  const loadTools = async () => {
+    try {
+      setToolsLoading(true);
+      const response = await axios.get("http://localhost:8000/tools");
+      setAllTools(response.data.tools);
+      console.log("Loaded tools:", response.data.tools);
+    } catch (err) {
+      console.error("Error loading tools:", err);
+      // Fallback to original tools if API fails
+      setAllTools([
+        { id: "web_search", name: "Web Search", description: "Search the internet for information" },
+        { id: "knowledgebase", name: "Knowledge Base", description: "Access stored knowledge and documents" }
+      ]);
+    } finally {
+      setToolsLoading(false);
+    }
+  };
+
+
+
+  // Filter agents based on search and capability
+  const filteredAgents = allAgents.filter(agent => {
+    const matchesSearch = agentFilter === "" || 
+      agent.name.toLowerCase().includes(agentFilter.toLowerCase()) ||
+      agent.id.toLowerCase().includes(agentFilter.toLowerCase()) ||
+      agent.capabilities.some(cap => cap.toLowerCase().includes(agentFilter.toLowerCase()));
+    
+    const matchesCapability = selectedCapability === "" || 
+      agent.capabilities.includes(selectedCapability);
+    
+    return matchesSearch && matchesCapability;
+  });
+
+  // Get unique capabilities for filter dropdown
+  const allCapabilities = [...new Set(allAgents.flatMap(agent => agent.capabilities))].sort();
+
   useEffect(() => {
+    // Load all dynamic data from APIs
+    const loadAllData = async () => {
+      await Promise.all([
+        loadAgents(),
+        loadTools()
+      ]);
+    };
+    
+    loadAllData();
+    
     // Load knowledgebase options
     axios.get("http://localhost:8000/knowledgebase")
       .then(({ data }) => setKnowledgebaseOptions(data))
@@ -106,7 +178,7 @@ export default function App() {
     setFlow(res.data.agent_sequence);
     setHistory(res.data.history);
     setSupervisorMode(res.data.supervisor_mode || false);
-    setSupervisorType(res.data.supervisor_type || "basic");
+    setSupervisorType("enhanced"); // Always enhanced now
     
     // Check supervisor availability for this chat
     try {
@@ -124,7 +196,7 @@ export default function App() {
     loadChat(res.data.id);
   };
 
-  const saveSettings = async (newFlow, newSupervisorMode = supervisorMode, newSupervisorType = supervisorType) => {
+  const saveSettings = async (newFlow, newSupervisorMode = supervisorMode) => {
     if (!current) {
       console.warn("No active chat. Cannot save settings.");
       return;
@@ -133,22 +205,19 @@ export default function App() {
       await axios.post(`http://localhost:8000/chats/${current}/settings`, {
         agent_sequence: newFlow,
         supervisor_mode: newSupervisorMode,
-        supervisor_type: newSupervisorType,
       });
       setFlow(newFlow);
       setSupervisorMode(newSupervisorMode);
-      setSupervisorType(newSupervisorType);
     } catch (err) {
       console.error("Failed to save settings:", err);
     }
   };
 
-  const toggleSupervisorMode = async (enabled, type = supervisorType) => {
+  const toggleSupervisorMode = async (enabled) => {
     if (!current) return;
     try {
-      await axios.post(`http://localhost:8000/chats/${current}/supervisor?enabled=${enabled}&supervisor_type=${type}`);
+      await axios.post(`http://localhost:8000/chats/${current}/supervisor?enabled=${enabled}`);
       setSupervisorMode(enabled);
-      setSupervisorType(type);
     } catch (err) {
       console.error("Failed to toggle supervisor mode:", err);
     }
@@ -1041,7 +1110,7 @@ export default function App() {
             }}>
               A
             </div>
-            Available Agents
+            Available Agents ({filteredAgents.length})
             {supervisorMode && (
               <span style={{
                 fontSize: "10px",
@@ -1056,47 +1125,114 @@ export default function App() {
               </span>
             )}
           </h4>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-            {ALL_AGENTS.map((agent) => (
-              <div
-                key={agent}
-                draggable={!supervisorMode}
-                onDragStart={() => {
-                  if (!supervisorMode) {
-                    dragItem.current = agent;
-                    dragType.current = "agent";
-                  }
-                }}
+          
+          {/* Agent Search and Filter */}
+          {!supervisorMode && (
+            <div style={{ marginBottom: "12px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <input
+                type="text"
+                placeholder="Search agents by name or capability..."
+                value={agentFilter}
+                onChange={(e) => setAgentFilter(e.target.value)}
                 style={{
-                  padding: "8px 12px",
-                  background: supervisorMode ? "#f3f4f6" : "#dbeafe",
-                  border: `1px solid ${supervisorMode ? "#d1d5db" : "#3b82f6"}`,
-                  borderRadius: "6px",
-                  cursor: supervisorMode ? "not-allowed" : "grab",
+                  padding: "6px 10px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "4px",
                   fontSize: "12px",
-                  fontWeight: "500",
-                  color: supervisorMode ? "#6b7280" : "#1e40af",
-                  transition: "all 0.2s ease",
-                  userSelect: "none"
+                  minWidth: "200px",
+                  flexGrow: 1
                 }}
-                onMouseEnter={(e) => {
-                  if (!supervisorMode) {
-                    e.target.style.background = "#bfdbfe";
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!supervisorMode) {
-                    e.target.style.background = "#dbeafe";
-                  }
+              />
+              <select
+                value={selectedCapability}
+                onChange={(e) => setSelectedCapability(e.target.value)}
+                style={{
+                  padding: "6px 10px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "4px",
+                  fontSize: "12px",
+                  background: "white"
                 }}
               >
-                {agent === "granny" ? "Granny" :
-                 agent === "story_creator" ? "Story Creator" :
-                 agent === "parody_creator" ? "Parody Creator" :
-                 agent}
-              </div>
-            ))}
-          </div>
+                <option value="">All Capabilities</option>
+                {allCapabilities.map(cap => (
+                  <option key={cap} value={cap}>{cap}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          
+          {agentsLoading ? (
+            <div style={{ 
+              padding: "20px",
+              textAlign: "center",
+              color: "#6b7280",
+              fontSize: "12px"
+            }}>
+              Loading agents...
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+              {filteredAgents.map((agent) => (
+                <div
+                  key={agent.id}
+                  draggable={!supervisorMode}
+                  onDragStart={() => {
+                    if (!supervisorMode) {
+                      dragItem.current = agent.id;
+                      dragType.current = "agent";
+                    }
+                  }}
+                  style={{
+                    padding: "10px 12px",
+                    background: supervisorMode ? "#f3f4f6" : "#dbeafe",
+                    border: `1px solid ${supervisorMode ? "#d1d5db" : "#3b82f6"}`,
+                    borderRadius: "8px",
+                    cursor: supervisorMode ? "not-allowed" : "grab",
+                    fontSize: "12px",
+                    fontWeight: "500",
+                    color: supervisorMode ? "#6b7280" : "#1e40af",
+                    transition: "all 0.2s ease",
+                    userSelect: "none",
+                    minWidth: "140px",
+                    maxWidth: "200px"
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!supervisorMode) {
+                      e.currentTarget.style.background = "#bfdbfe";
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!supervisorMode) {
+                      e.currentTarget.style.background = "#dbeafe";
+                    }
+                  }}
+                  title={`${agent.description}\nCapabilities: ${agent.capabilities.join(', ')}\nSkills: ${agent.skills.join(', ') || 'None'}`}
+                >
+                  <div style={{ fontWeight: "600", marginBottom: "4px" }}>
+                    {agent.name}
+                  </div>
+                  <div style={{ 
+                    fontSize: "10px", 
+                    color: supervisorMode ? "#9ca3af" : "#64748b",
+                    marginBottom: "4px"
+                  }}>
+                    {agent.capabilities.slice(0, 2).join(', ')}
+                    {agent.capabilities.length > 2 && '...'}
+                  </div>
+                  {agent.skills.length > 0 && (
+                    <div style={{ 
+                      fontSize: "9px", 
+                      color: supervisorMode ? "#9ca3af" : "#059669",
+                      fontWeight: "500"
+                    }}>
+                      ⚡ {agent.skills.length} skill{agent.skills.length !== 1 ? 's' : ''}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div style={{ 
@@ -1141,46 +1277,69 @@ export default function App() {
               </span>
             )}
           </h4>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-            {ALL_TOOLS.map((tool) => (
-              <div
-                key={tool}
-                draggable={!supervisorMode}
-                onDragStart={() => {
-                  if (!supervisorMode) {
-                    dragItem.current = tool;
-                    dragType.current = "tool";
-                  }
-                }}
-                style={{
-                  padding: "8px 12px",
-                  background: supervisorMode ? "#f3f4f6" : "#fef3c7",
-                  border: `1px solid ${supervisorMode ? "#d1d5db" : "#f59e0b"}`,
-                  borderRadius: "6px",
-                  cursor: supervisorMode ? "not-allowed" : "grab",
-                  fontSize: "12px",
-                  fontWeight: "500",
-                  color: supervisorMode ? "#6b7280" : "#92400e",
-                  transition: "all 0.2s ease",
-                  userSelect: "none"
-                }}
-                onMouseEnter={(e) => {
-                  if (!supervisorMode) {
-                    e.target.style.background = "#fde68a";
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!supervisorMode) {
-                    e.target.style.background = "#fef3c7";
-                  }
-                }}
-              >
-                {tool === "web_search" ? "Web Search" :
-                 tool === "knowledgebase" ? "Knowledge Base" :
-                 tool}
-              </div>
-            ))}
-          </div>
+          {toolsLoading ? (
+            <div style={{ 
+              padding: "20px",
+              textAlign: "center",
+              color: "#6b7280",
+              fontSize: "12px"
+            }}>
+              Loading tools...
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+              {allTools.map((tool) => (
+                <div
+                  key={tool.id}
+                  draggable={!supervisorMode}
+                  onDragStart={() => {
+                    if (!supervisorMode) {
+                      dragItem.current = tool.id;
+                      dragType.current = "tool";
+                    }
+                  }}
+                  style={{
+                    padding: "10px 12px",
+                    background: supervisorMode ? "#f3f4f6" : "#fef3c7",
+                    border: `1px solid ${supervisorMode ? "#d1d5db" : "#f59e0b"}`,
+                    borderRadius: "8px",
+                    cursor: supervisorMode ? "not-allowed" : "grab",
+                    fontSize: "12px",
+                    fontWeight: "500",
+                    color: supervisorMode ? "#6b7280" : "#92400e",
+                    transition: "all 0.2s ease",
+                    userSelect: "none",
+                    minWidth: "120px",
+                    maxWidth: "180px"
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!supervisorMode) {
+                      e.currentTarget.style.background = "#fde68a";
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!supervisorMode) {
+                      e.currentTarget.style.background = "#fef3c7";
+                    }
+                  }}
+                  title={`${tool.description}\nUse cases: ${tool.use_cases ? tool.use_cases.join(', ') : 'General purpose'}`}
+                >
+                  <div style={{ fontWeight: "600", marginBottom: "4px" }}>
+                    {tool.name}
+                  </div>
+                  <div style={{ 
+                    fontSize: "10px", 
+                    color: supervisorMode ? "#9ca3af" : "#78716c",
+                    lineHeight: "1.3"
+                  }}>
+                    {tool.description.length > 50 ? 
+                      tool.description.substring(0, 50) + '...' : 
+                      tool.description}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Supervisor Mode Controls */}
@@ -1254,36 +1413,18 @@ export default function App() {
             </div>
             
             {supervisorMode && (
-              <div>
-                <label style={{ 
-                  fontSize: "12px", 
-                  color: "#6b7280", 
-                  display: "block", 
-                  marginBottom: "6px",
-                  fontWeight: "500"
-                }}>
-                  Supervisor Type:
-                </label>
-                <select
-                  value={supervisorType}
-                  onChange={(e) => toggleSupervisorMode(true, e.target.value)}
-                  style={{
-                    width: "100%",
-                    padding: "6px 10px",
-                    borderRadius: "6px",
-                    border: "1px solid #d1d5db",
-                    background: "#ffffff",
-                    fontSize: "12px",
-                    fontWeight: "500",
-                    color: "#374151",
-                    cursor: "pointer",
-                    outline: "none"
-                  }}
-                >
-                  <option value="basic">Basic Routing</option>
-                  <option value="advanced">Advanced Routing</option>
-                  <option value="enhanced">🧠 Enhanced Intelligence</option>
-                </select>
+              <div style={{
+                fontSize: "12px",
+                color: "#6b7280",
+                fontWeight: "500",
+                display: "flex",
+                alignItems: "center",
+                padding: "8px 12px",
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: "6px"
+              }}>
+                🧠 Enhanced Intelligence Mode
               </div>
             )}
             
@@ -1294,11 +1435,7 @@ export default function App() {
               lineHeight: "1.4"
             }}>
               {supervisorMode ? (
-                supervisorType === "enhanced" ? (
-                  <>🧠 AI will intelligently decompose complex queries and orchestrate multiple resources</>
-                ) : (
-                  <>🤖 AI will automatically choose the best agent for each request</>
-                )
+                <>🧠 AI will intelligently analyze your request, select the best agent from all 6 available agents, and orchestrate tools and resources</>
               ) : (
                 <>⚙️ Use manual agent flow configuration below</>
               )}
